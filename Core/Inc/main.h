@@ -61,10 +61,6 @@ void Error_Handler(void);
 #define I2C3_SCL_GPIO_Port GPIOB
 #define I2C3_SDA_Pin GPIO_PIN_7
 #define I2C3_SDA_GPIO_Port GPIOB
-#define HCSR04_TRIG_Pin GPIO_PIN_14
-#define HCSR04_TRIG_GPIO_Port GPIOD
-#define HCSR04_ECHO_Pin GPIO_PIN_15
-#define HCSR04_ECHO_GPIO_Port GPIOD
 
 /* USER CODE BEGIN Private defines */
 
