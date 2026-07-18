@@ -17,7 +17,7 @@ extern "C" {
 /* Hardware mapping ----------------------------------------------------------*/
 extern TIM_HandleTypeDef htim1;
 #define SERVO_TIM_HANDLE      &htim1
-#define SERVO_TIM_CHANNEL     TIM_CHANNEL_3
+#define SERVO_TIM_CHANNEL     TIM_CHANNEL_1
 
 /* Servo physical parameters -------------------------------------------------*/
 #define SERVO_MIN_ANGLE       0.0f

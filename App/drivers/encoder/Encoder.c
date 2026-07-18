@@ -26,33 +26,19 @@ void encoder_init(void) {
 
 int16_t encoder_get_delta_count(encoder_config *Encoder_Config) {
     uint16_t current_count;
-    int32_t delta_count;
-    uint32_t counter_period;
+    int16_t delta_count;
 
     if (Encoder_Config == NULL || Encoder_Config->htim == NULL) {
         return 0;
     }
 
     current_count = (uint16_t)__HAL_TIM_GET_COUNTER(Encoder_Config->htim);
-    delta_count = (int32_t)current_count - (int32_t)Encoder_Config->last_count;
-
-    /* Encoder timers may use an ARR smaller than 0xffff when sharing a
-     * timer with another function, such as a 50 Hz servo PWM channel. */
-    counter_period = (uint32_t)__HAL_TIM_GET_AUTORELOAD(Encoder_Config->htim) + 1U;
-    if (counter_period > 1U && counter_period <= 0x10000U) {
-        int32_t half_period = (int32_t)(counter_period / 2U);
-
-        if (delta_count > half_period) {
-            delta_count -= (int32_t)counter_period;
-        } else if (delta_count < -half_period) {
-            delta_count += (int32_t)counter_period;
-        }
-    }
+    delta_count = (int16_t)(current_count - Encoder_Config->last_count);
 
     Encoder_Config->last_count = current_count;
-    Encoder_Config->total_count += (int16_t)delta_count;
+    Encoder_Config->total_count += delta_count;
 
-    return (int16_t)delta_count;
+    return delta_count;
 }
 
 int32_t encoder_get_total_count(encoder_config *Encoder_Config) {

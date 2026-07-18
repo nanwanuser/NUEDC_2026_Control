@@ -41,8 +41,6 @@ extern TIM_HandleTypeDef htim1;
 void MX_TIM1_Init(void);
 
 void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
-void HAL_TIM_Encoder_MspInit(TIM_HandleTypeDef *htim);
-void HAL_TIM_Encoder_MspDeInit(TIM_HandleTypeDef *htim);
 
 /* USER CODE BEGIN Prototypes */
 
