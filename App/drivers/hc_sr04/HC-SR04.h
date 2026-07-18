@@ -9,11 +9,7 @@ extern "C" {
 #include <stddef.h>
 #include <stdint.h>
 
-/* Hardware mapping ----------------------------------------------------------*/
-#define HCSR04_TRIG_GPIO_Port      GPIOA
-#define HCSR04_TRIG_Pin            GPIO_PIN_0
-#define HCSR04_ECHO_GPIO_Port      GPIOA
-#define HCSR04_ECHO_Pin            GPIO_PIN_1
+/* Hardware mapping is generated from the CubeMX user labels in main.h. */
 
 /* Measurement parameters ----------------------------------------------------*/
 #define HCSR04_TRIGGER_US          10U
