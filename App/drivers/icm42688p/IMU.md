@@ -246,44 +246,47 @@ if (euler != NULL)
 
 ## 8. 姿态解算参数
 
-默认融合参数位于 `../../lib/IMU_RC/imu_fusion.c` 的 `IMU_FusionGetDefaultConfig()`。
+默认融合参数位于 `../../lib/imu_fusion/imu_fusion.c` 的 `IMU_FusionGetDefaultConfig()`，算法实现来自 `../../lib/fusion` 中的 xioTechnologies/Fusion v1.3.1。
 
 当前参数：
 
 ```c
-config->gyro_static_threshold_dps = 1.5f;
-config->accel_static_threshold_g = 0.08f;
+config->sample_rate_hz = 1000.0f;
+config->gyro_static_threshold_dps = 3.0f;
+config->bias_stationary_period_s = 3.0f;
 config->accel_lpf_alpha = 0.45f;
-config->bias_alpha = 0.001f;
-config->mahony_kp = 5.5f;
-config->mahony_ki = 0.02f;
+config->fusion_gain = 0.5f;
+config->gyroscope_range_dps = 500.0f;
+config->acceleration_rejection_deg = 10.0f;
+config->recovery_trigger_period_s = 5.0f;
 ```
 
 参数含义：
 
 | 参数 | 作用 | 调大效果 | 调小效果 |
 |---|---|---|---|
+| sample_rate_hz | Fusion 和零偏算法的标称采样率 | 必须与实际采样率一致 | 必须与实际采样率一致 |
 | gyro_static_threshold_dps | 静止判断陀螺仪阈值 | 更容易认为静止 | 更严格 |
-| accel_static_threshold_g | 静止判断加速度阈值 | 更容易认为静止 | 更严格 |
+| bias_stationary_period_s | 更新零偏前所需的连续静止时间 | 更不易误判，但收敛更慢 | 更快开始估计，但更易误判 |
 | accel_lpf_alpha | 加速度低通滤波系数 | 动态响应更快，但噪声更大 | 更稳，但延迟更大 |
-| bias_alpha | 零漂在线估计速度 | 零漂收敛更快，但运动时可能误估 | 更稳，但收敛慢 |
-| mahony_kp | 加速度修正姿态强度 | 姿态回正快，动态更灵敏 | 更平滑，但响应慢 |
-| mahony_ki | 积分修正强度 | 长期漂移更快被压住 | 更不容易积分过冲 |
+| fusion_gain | 加速度反馈增益 | 姿态回正更快，但更受线性加速度影响 | 更依赖陀螺仪，漂移更明显 |
+| gyroscope_range_dps | 陀螺仪量程及超量程恢复阈值 | 必须与 ICM42688P 配置一致 | 必须与 ICM42688P 配置一致 |
+| acceleration_rejection_deg | 拒绝加速度修正的倾角误差阈值 | 更少拒绝加速度 | 更容易拒绝运动干扰 |
+| recovery_trigger_period_s | 持续拒绝后的恢复触发时间 | 更晚进入恢复 | 更快重新使用加速度 |
 
 ## 9. 动态响应调参建议
 
 如果感觉动态响应差，优先按下面顺序调：
 
 1. 增大 `accel_lpf_alpha`，例如从 `0.45f` 改到 `0.55f` 或 `0.65f`。
-2. 增大 `mahony_kp`，例如从 `5.5f` 改到 `6.5f` 或 `7.5f`。
-3. 保持 `mahony_ki` 不要太大，避免积分导致姿态慢慢偏。
-4. 确认 `APP_IMU_SAMPLE_DT_S` 和实际调用周期一致，当前为 `0.001f`，对应 1kHz。
-5. 如果主循环被 OLED 或其他任务拖慢，需要考虑用定时器节拍或 RTOS 任务固定 IMU 更新周期。
+2. 适度增大 `fusion_gain`，例如从 `0.5f` 改到 `0.7f`。
+3. 确认 `APP_IMU_SAMPLE_DT_S` 和实际调用周期一致，当前为 `0.001f`，对应 1 kHz。
+4. 如果主循环被 OLED 或其他任务拖慢，需要考虑用定时器节拍或 RTOS 任务固定 IMU 更新周期。
 
 如果感觉静止时抖动大，优先按下面顺序调：
 
 1. 降低 `accel_lpf_alpha`，例如 `0.35f`。
-2. 降低 `mahony_kp`，例如 `4.0f`。
+2. 降低 `fusion_gain`，例如 `0.3f`。
 3. 检查机械安装是否松动。
 4. 降低 SPI 速率到 `/8` 验证通信噪声。
 5. 增加上电静止校准时间。
@@ -291,8 +294,8 @@ config->mahony_ki = 0.02f;
 如果感觉零漂明显，优先检查：
 
 1. 上电时 IMU 是否保持静止。
-2. `bias_alpha` 是否太小。
-3. 静止判断阈值是否太严格，导致零漂估计没有启动。
+2. `gyro_static_threshold_dps` 是否太严格，导致零偏估计没有启动。
+3. `bias_stationary_period_s` 是否符合设备的实际静止时长。
 4. 温升后是否需要更长时间在线估计。
 
 ## 10. 调试步骤

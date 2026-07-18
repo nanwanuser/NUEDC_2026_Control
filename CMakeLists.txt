@@ -53,8 +53,12 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     App/drivers/servo/Servo.c
     App/drivers/tb6612/TB6612.c
     App/lib/hcsr04_oled/HC-SR04_OLED.c
+    App/lib/fusion/FusionAhrs.c
+    App/lib/fusion/FusionBias.c
+    App/lib/fusion/FusionCompass.c
     App/lib/imu_fusion/imu_fusion.c
     App/lib/imu_service/app_imu.c
+    Task/imu_justfloat_demo.c
 )
 
 # Font tables intentionally use flattened aggregate initializers.
@@ -72,8 +76,10 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/App/drivers/servo
     ${CMAKE_CURRENT_SOURCE_DIR}/App/drivers/tb6612
     ${CMAKE_CURRENT_SOURCE_DIR}/App/lib/hcsr04_oled
+    ${CMAKE_CURRENT_SOURCE_DIR}/App/lib/fusion
     ${CMAKE_CURRENT_SOURCE_DIR}/App/lib/imu_fusion
     ${CMAKE_CURRENT_SOURCE_DIR}/App/lib/imu_service
+    ${CMAKE_CURRENT_SOURCE_DIR}/Task
 )
 
 # Add project symbols (macros)

@@ -94,3 +94,17 @@ const imu_quat_t *AppIMU_GetQuaternion(void)
 
     return IMU_FusionGetQuaternion(&s_imu_state);
 }
+
+uint8_t AppIMU_GetTelemetry(app_imu_telemetry_t *telemetry)
+{
+    if ((telemetry == NULL) || (s_ready == 0U) || (s_imu_state.sample_count == 0U))
+    {
+        return 0U;
+    }
+
+    telemetry->accel_g = s_imu_state.last_accel_g;
+    telemetry->gyro_dps = s_imu_state.last_gyro_dps;
+    telemetry->euler_deg = s_imu_state.euler_deg;
+    telemetry->temperature_c = s_imu_state.last_temperature_c;
+    return 1U;
+}

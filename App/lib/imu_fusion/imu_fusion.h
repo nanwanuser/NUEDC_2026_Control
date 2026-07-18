@@ -7,6 +7,7 @@ extern "C" {
 
 #include <stdint.h>
 
+#include "Fusion.h"
 #include "icm42688p.h"
 
 typedef struct
@@ -33,25 +34,28 @@ typedef struct
 
 typedef struct
 {
-    uint16_t gyro_calibration_samples;
+    float sample_rate_hz;
     float gyro_static_threshold_dps;
-    float accel_static_threshold_g;
+    float bias_stationary_period_s;
     float accel_lpf_alpha;
-    float bias_alpha;
-    float mahony_kp;
-    float mahony_ki;
+    float fusion_gain;
+    float gyroscope_range_dps;
+    float acceleration_rejection_deg;
+    float recovery_trigger_period_s;
 } imu_fusion_config_t;
 
 typedef struct
 {
     uint8_t initialized;
     uint8_t gyro_bias_ready;
-    uint16_t calibration_count;
+    uint32_t sample_count;
 
+    FusionAhrs ahrs;
+    FusionBias bias;
     imu_vec3_t gyro_bias_dps;
-    imu_vec3_t gyro_integral;
     imu_vec3_t accel_filtered_g;
     imu_vec3_t last_accel_g;
+    imu_vec3_t last_gyro_dps;
 
     imu_quat_t quaternion;
     imu_euler_t euler_deg;
