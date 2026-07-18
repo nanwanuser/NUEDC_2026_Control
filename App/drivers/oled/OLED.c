@@ -41,23 +41,23 @@
 /*
 选择OLED驱动方式，默认使用硬件I2C。如果要用软件I2C就将硬件I2C那行的宏定义注释掉，将软件I2C那行的注释取消。
 不能同时两个都同时取消注释！
-在stm32cubemx中初始化时需要将SCL和SDA引脚的"user lable"分别设置为I2C3_SCL和I2C3_SDA。
+在stm32cubemx中初始化时需要将I2C1配置为PB8(SCL)和PB9(SDA)。
 */
-//#define OLED_USE_HW_I2C	// 硬件I2C
-#define OLED_USE_SW_I2C	// 软件I2C
+#define OLED_USE_HW_I2C	// 硬件I2C
+//#define OLED_USE_SW_I2C	// 软件I2C
 
 /*引脚定义，可在此处修改I2C通信引脚*/
-#define OLED_SCL            I2C3_SCL_Pin // SCL
-#define OLED_SDA            I2C3_SDA_Pin // SDA
-#define OLED_SCL_GPIO_Port  I2C3_SCL_GPIO_Port
-#define OLED_SDA_GPIO_Port  I2C3_SDA_GPIO_Port
+#define OLED_SCL            GPIO_PIN_8 // SCL
+#define OLED_SDA            GPIO_PIN_9 // SDA
+#define OLED_SCL_GPIO_Port  GPIOB
+#define OLED_SDA_GPIO_Port  GPIOB
 
 /*STM32G474芯片的硬件I2C3: PA8 -- SCL; PC9 -- SDA */
 
 #ifdef OLED_USE_HW_I2C
 /*I2C接口，定义OLED屏使用哪个I2C接口*/
-#define OLED_I2C            hi2c3
-extern  I2C_HandleTypeDef   hi2c3;	//HAL库使用，指定硬件IIC接口
+#define OLED_I2C            hi2c1
+extern  I2C_HandleTypeDef   hi2c1;	//HAL库使用，指定硬件IIC接口
 #endif
 
 /*OLED从机地址*/
@@ -175,18 +175,16 @@ void OLED_GPIO_Init(void)
             ;
     }
 #ifdef OLED_USE_SW_I2C
-    __HAL_RCC_GPIOC_CLK_ENABLE();		// 使能GPIOC时钟
-		__HAL_RCC_GPIOB_CLK_ENABLE();       // 使能GPIOB时钟
-    __HAL_RCC_GPIOA_CLK_ENABLE();       // 使能GPIOA时钟
+	__HAL_RCC_GPIOB_CLK_ENABLE();       // 使能GPIOB时钟
 	GPIO_InitTypeDef GPIO_InitStruct = {0};              // 定义结构体配置GPIO
     GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;	        // 设置GPIO模式为开漏输出模式
     GPIO_InitStruct.Pull = GPIO_PULLUP;                 // 内部上拉电阻
 	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;  // 设置GPIO速度为高速
-	GPIO_InitStruct.Pin = I2C3_SDA_Pin;                 // 设置引脚
-    HAL_GPIO_Init(I2C3_SDA_GPIO_Port, &GPIO_InitStruct);// 初始化GPIO
+	GPIO_InitStruct.Pin = OLED_SDA;                 // 设置引脚
+	HAL_GPIO_Init(OLED_SDA_GPIO_Port, &GPIO_InitStruct);// 初始化GPIO
 
-    GPIO_InitStruct.Pin = I2C3_SCL_Pin;
-    HAL_GPIO_Init(I2C3_SCL_GPIO_Port, &GPIO_InitStruct);
+	GPIO_InitStruct.Pin = OLED_SCL;
+	HAL_GPIO_Init(OLED_SCL_GPIO_Port, &GPIO_InitStruct);
 
 	/*释放SCL和SDA*/
 	OLED_W_SCL(1);

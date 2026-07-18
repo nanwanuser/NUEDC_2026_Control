@@ -11,28 +11,29 @@
 
 ## 当前硬件配置
 
-当前默认使用软件 I2C：
+当前默认使用硬件 I2C1：
 
 ```c
-//#define OLED_USE_HW_I2C
-#define OLED_USE_SW_I2C
+#define OLED_USE_HW_I2C
+//#define OLED_USE_SW_I2C
 ```
-默认引脚来自 main.h：
+默认引脚来自扩展板：
 ```c
-SCL：PB6，宏名 I2C3_SCL_Pin
-SDA：PB7，宏名 I2C3_SDA_Pin
+SCL：PB8，I2C1_SCL
+SDA：PB9，I2C1_SDA
 ```
 OLED 地址：0x3C << 1，即 0x78
 CubeMX 中 SCL 和 SDA 引脚 user label 需要设置为：
 ```c
-I2C3_SCL
-I2C3_SDA
+I2C1_SCL
+I2C1_SDA
 ```
 初始化顺序
 ```c
 HAL_Init();
 SystemClock_Config();
 MX_GPIO_Init();
+MX_I2C1_Init();
 OLED_Init();
 ```
 OLED_Init() 会初始化软件 I2C 引脚、发送 OLED 初始化命令、清屏并刷新屏幕。
@@ -102,11 +103,11 @@ OLED_ShowString(0, 0, "OLED OK", OLED_8X16);
 OLED_DrawRectangle(0, 20, 80, 24, OLED_UNFILLED);
 OLED_Update();
 ```
-切换到硬件 I2C
+切换到软件 I2C
 在 OLED.c 中改为：
 ```c
-#define OLED_USE_HW_I2C
-//#define OLED_USE_SW_I2C
+//#define OLED_USE_HW_I2C
+#define OLED_USE_SW_I2C
 ```
 同时确认：
 CubeMX 已启用对应 I2C 外设
@@ -115,8 +116,8 @@ OLED_I2C 指向正确的 I2C_HandleTypeDef
 
 当前代码默认硬件 I2C 句柄为：
 ```c
-#define OLED_I2C hi2c3
-extern I2C_HandleTypeDef hi2c3;
+#define OLED_I2C hi2c1
+extern I2C_HandleTypeDef hi2c1;
 ```
 ##注意事项
     坐标原点在左上角，X 范围 0~127，Y 范围 0~63。
