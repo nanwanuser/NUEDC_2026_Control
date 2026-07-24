@@ -51,6 +51,20 @@
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
+/* Definitions for Track_line */
+osThreadId_t Track_lineHandle;
+const osThreadAttr_t Track_line_attributes = {
+  .name = "Track_line",
+  .stack_size = 512 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
+/* Definitions for Gimbal_ctrl */
+osThreadId_t Gimbal_ctrlHandle;
+const osThreadAttr_t Gimbal_ctrl_attributes = {
+  .name = "Gimbal_ctrl",
   .stack_size = 512 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
@@ -61,6 +75,8 @@ const osThreadAttr_t defaultTask_attributes = {
 /* USER CODE END FunctionPrototypes */
 
 void StartDefaultTask(void *argument);
+void Track_line_App(void *argument);
+void Gimbal_ctrl_App(void *argument);
 
 void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
 
@@ -93,6 +109,12 @@ void MX_FREERTOS_Init(void) {
   /* Create the thread(s) */
   /* creation of defaultTask */
   defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
+
+  /* creation of Track_line */
+  Track_lineHandle = osThreadNew(Track_line_App, NULL, &Track_line_attributes);
+
+  /* creation of Gimbal_ctrl */
+  Gimbal_ctrlHandle = osThreadNew(Gimbal_ctrl_App, NULL, &Gimbal_ctrl_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -127,6 +149,42 @@ void StartDefaultTask(void *argument)
     osDelayUntil(next_wake_tick);
   }
   /* USER CODE END StartDefaultTask */
+}
+
+/* USER CODE BEGIN Header_Track_line_App */
+/**
+* @brief Function implementing the Track_line thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_Track_line_App */
+__weak void Track_line_App(void *argument)
+{
+  /* USER CODE BEGIN Track_line_App */
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
+  /* USER CODE END Track_line_App */
+}
+
+/* USER CODE BEGIN Header_Gimbal_ctrl_App */
+/**
+* @brief Function implementing the Gimbal_ctrl thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_Gimbal_ctrl_App */
+__weak void Gimbal_ctrl_App(void *argument)
+{
+  /* USER CODE BEGIN Gimbal_ctrl_App */
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
+  /* USER CODE END Gimbal_ctrl_App */
 }
 
 /* Private application code --------------------------------------------------*/
