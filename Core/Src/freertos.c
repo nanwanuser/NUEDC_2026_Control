@@ -25,7 +25,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "motor_task.h"
+#include "motor_speed_control.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -35,7 +35,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define DEFAULT_TASK_LOOP_DELAY_MS 1000U
+#define MOTOR_CONTROL_TASK_PERIOD_TICKS MOTOR_SPEED_CONTROL_PERIOD_MS
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -51,7 +51,21 @@
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
-  .stack_size = 1500 * 4,
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
+/* Definitions for Track_line */
+osThreadId_t Track_lineHandle;
+const osThreadAttr_t Track_line_attributes = {
+  .name = "Track_line",
+  .stack_size = 512 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
+/* Definitions for Gimbal_ctrl */
+osThreadId_t Gimbal_ctrlHandle;
+const osThreadAttr_t Gimbal_ctrl_attributes = {
+  .name = "Gimbal_ctrl",
+  .stack_size = 512 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
 
@@ -61,6 +75,8 @@ const osThreadAttr_t defaultTask_attributes = {
 /* USER CODE END FunctionPrototypes */
 
 void StartDefaultTask(void *argument);
+void Track_line_App(void *argument);
+void Gimbal_ctrl_App(void *argument);
 
 void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
 
@@ -94,10 +110,14 @@ void MX_FREERTOS_Init(void) {
   /* creation of defaultTask */
   defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
 
+  /* creation of Track_line */
+  Track_lineHandle = osThreadNew(Track_line_App, NULL, &Track_line_attributes);
+
+  /* creation of Gimbal_ctrl */
+  Gimbal_ctrlHandle = osThreadNew(Gimbal_ctrl_App, NULL, &Gimbal_ctrl_attributes);
+
   /* USER CODE BEGIN RTOS_THREADS */
-  if (!motor_debug_start()) {
-    Error_Handler();
-  }
+  /* add threads, ... */
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
@@ -116,14 +136,55 @@ void MX_FREERTOS_Init(void) {
 void StartDefaultTask(void *argument)
 {
   /* USER CODE BEGIN StartDefaultTask */
+  uint32_t next_wake_tick = osKernelGetTickCount();
+
+  (void)argument;
+  motor_speed_control_init();
+
   /* Infinite loop */
-  int i=-1000;
   for(;;)
   {
-    motor_debug_set_pwm(i++);
-    osDelay(DEFAULT_TASK_LOOP_DELAY_MS);
+    motor_speed_control_process();
+    next_wake_tick += MOTOR_CONTROL_TASK_PERIOD_TICKS;
+    osDelayUntil(next_wake_tick);
   }
   /* USER CODE END StartDefaultTask */
+}
+
+/* USER CODE BEGIN Header_Track_line_App */
+/**
+* @brief Function implementing the Track_line thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_Track_line_App */
+__weak void Track_line_App(void *argument)
+{
+  /* USER CODE BEGIN Track_line_App */
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
+  /* USER CODE END Track_line_App */
+}
+
+/* USER CODE BEGIN Header_Gimbal_ctrl_App */
+/**
+* @brief Function implementing the Gimbal_ctrl thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_Gimbal_ctrl_App */
+__weak void Gimbal_ctrl_App(void *argument)
+{
+  /* USER CODE BEGIN Gimbal_ctrl_App */
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
+  /* USER CODE END Gimbal_ctrl_App */
 }
 
 /* Private application code --------------------------------------------------*/

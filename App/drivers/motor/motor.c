@@ -1,25 +1,150 @@
 //
-// Created by m1816 on 26-7-14.
+// Created by m1816 on 26-7-24.
 //
 
-#include "Encoder.h"
+#include "motor.h"
 
 #include <stdio.h>
+
+/*
+ * ========================== 电机硬件配置区 ==========================
+ *
+ * 电机 1：
+ *   PWM      -> TIM9_CH1 / PE5  / PWMA1
+ *   TB6612   -> AIN1: PA11，AIN2: PA10
+ *   编码器 A -> TIM2_CH1 / PA15 / H1A
+ *   编码器 B -> TIM2_CH2 / PB3  / H1B
+ *   正速度   -> CCW
+ *
+ * 电机 2：
+ *   PWM      -> TIM9_CH2 / PE6  / PWMB1
+ *   TB6612   -> BIN1: PA9，BIN2: PA8
+ *   编码器 A -> TIM4_CH1 / PD12 / H2A
+ *   编码器 B -> TIM4_CH2 / PD13 / H2B
+ *   正速度   -> CW
+ *
+ * CubeMX 必须保持以下配置：
+ *   TIM9  -> PWM Generation CH1/CH2，ARR = 9999
+ *   TIM2  -> Encoder Mode TI12，ARR = 65535
+ *   TIM4  -> Encoder Mode TI12，ARR = 65535
+ *   AIN1/AIN2/BIN1/BIN2 -> GPIO Output，默认低电平
+ *
+ * 更换端口时，先在 CubeMX 中修改并重新生成工程，再修改下面两个数组。
+ * ====================================================================
+ */
 
 #define ENCODER_PI_F 3.14159265358979323846f
 #define ENCODER_MILLI_SCALE 1000.0f
 #define ENCODER_REPORT_BUFFER_SIZE 256U
 #define ENCODER_COUNTER_REPORT_BUFFER_SIZE 64U
 
-// 未提供板级强配置时，驱动保持安全空配置。
-__weak encoder_config Encoder_Config[encoder_count] = {0};
+motor_config Motor_Config[MOTOR_COUNT] = {
+    {
+        .htim = &htim9,
+        .channel = TIM_CHANNEL_1,
+        .in1_port = AIN1_GPIO_Port,
+        .in1_pin = AIN1_Pin,
+        .in2_port = AIN2_GPIO_Port,
+        .in2_pin = AIN2_Pin,
+        .positive_direction = CCW,
+    },
+    {
+        .htim = &htim9,
+        .channel = TIM_CHANNEL_2,
+        .in1_port = BIN1_GPIO_Port,
+        .in1_pin = BIN1_Pin,
+        .in2_port = BIN2_GPIO_Port,
+        .in2_pin = BIN2_Pin,
+        .positive_direction = CW,
+    },
+};
 
-encoder_motion_data Encoder_Motion[encoder_count] = {0};
+encoder_config Encoder_Config[MOTOR_COUNT] = {
+    {
+        .htim = &htim2,
+        .total_count = 0,
+        .last_count = 0,
+    },
+    {
+        .htim = &htim4,
+        .total_count = 0,
+        .last_count = 0,
+    },
+};
+
+encoder_motion_data Encoder_Motion[MOTOR_COUNT] = {0};
 
 static uint32_t s_last_report_tick;
 static uint32_t s_last_counter_report_tick;
 static char s_report_buffer[ENCODER_REPORT_BUFFER_SIZE];
 static char s_counter_report_buffer[ENCODER_COUNTER_REPORT_BUFFER_SIZE];
+static Motor_Direction s_motor_direction[MOTOR_COUNT];
+static uint8_t s_motor_direction_valid[MOTOR_COUNT];
+
+static uint8_t motor_config_is_valid(motor_config config) {
+    return config.htim != NULL &&
+           config.in1_port != NULL &&
+           config.in2_port != NULL;
+}
+
+static int32_t motor_find_index(motor_config config) {
+    uint32_t i;
+
+    for (i = 0; i < MOTOR_COUNT; i++) {
+        if (config.htim == Motor_Config[i].htim &&
+            config.channel == Motor_Config[i].channel) {
+            return (int32_t)i;
+        }
+    }
+
+    return -1;
+}
+
+static void motor_write_pwm(motor_config config, float speed_magnitude) {
+    uint32_t period = __HAL_TIM_GET_AUTORELOAD(config.htim) + 1U;
+    uint32_t compare = (uint32_t)(speed_magnitude * (float)period /
+                                  MOTOR_SPEED_COMMAND_MAX + 0.5f);
+
+    __HAL_TIM_SET_COMPARE(config.htim, config.channel, compare);
+}
+
+static void motor_set_direction(motor_config config,
+                                Motor_Direction direction) {
+    switch (direction) {
+        case CW:
+            HAL_GPIO_WritePin(config.in1_port, config.in1_pin, GPIO_PIN_SET);
+            HAL_GPIO_WritePin(config.in2_port, config.in2_pin, GPIO_PIN_RESET);
+            break;
+        case CCW:
+            HAL_GPIO_WritePin(config.in1_port, config.in1_pin, GPIO_PIN_RESET);
+            HAL_GPIO_WritePin(config.in2_port, config.in2_pin, GPIO_PIN_SET);
+            break;
+        default:
+            HAL_GPIO_WritePin(config.in1_port, config.in1_pin, GPIO_PIN_RESET);
+            HAL_GPIO_WritePin(config.in2_port, config.in2_pin, GPIO_PIN_RESET);
+            break;
+    }
+}
+
+static Motor_Direction motor_get_reverse_direction(Motor_Direction direction) {
+    if (direction == CW) {
+        return CCW;
+    }
+
+    return CW;
+}
+
+static int32_t encoder_find_index(const encoder_config *config) {
+    uint32_t i;
+
+    for (i = 0; i < MOTOR_COUNT; i++) {
+        if (config == &Encoder_Config[i]) {
+            return (int32_t)i;
+        }
+    }
+
+    return -1;
+}
 
 static int32_t encoder_float_to_milli(float value) {
     float scaled = value * ENCODER_MILLI_SCALE;
@@ -65,22 +190,104 @@ static int encoder_format_report_line(char *buffer,
                     (unsigned long)(distance_abs % 1000U));
 }
 
-static int32_t encoder_find_index(const encoder_config *config) {
+void motor_init(void) {
     uint32_t i;
 
-    for (i = 0; i < encoder_count; i++) {
-        if (config == &Encoder_Config[i]) {
-            return (int32_t)i;
+    for (i = 0; i < MOTOR_COUNT; i++) {
+        s_motor_direction_valid[i] = 0U;
+        if (!motor_config_is_valid(Motor_Config[i])) {
+            continue;
+        }
+
+        HAL_TIM_PWM_Start(Motor_Config[i].htim, Motor_Config[i].channel);
+        motor_stop(Motor_Config[i]);
+    }
+
+    encoder_init();
+}
+
+void motor_set_speed(motor_config config, float speed) {
+    float speed_magnitude;
+    Motor_Direction direction;
+    int32_t motor_index;
+
+    if (!motor_config_is_valid(config)) {
+        return;
+    }
+
+    if (speed < MOTOR_SPEED_COMMAND_MIN) {
+        speed = MOTOR_SPEED_COMMAND_MIN;
+    } else if (speed > MOTOR_SPEED_COMMAND_MAX) {
+        speed = MOTOR_SPEED_COMMAND_MAX;
+    }
+
+    if (speed == 0.0f) {
+        motor_stop(config);
+        return;
+    }
+
+    if (speed > 0.0f) {
+        speed_magnitude = speed;
+        direction = config.positive_direction;
+    } else {
+        speed_magnitude = -speed;
+        direction = motor_get_reverse_direction(config.positive_direction);
+    }
+
+    motor_index = motor_find_index(config);
+    if (motor_index < 0 ||
+        !s_motor_direction_valid[motor_index] ||
+        s_motor_direction[motor_index] != direction) {
+        // 仅在方向变化前关闭 PWM，避免闭环重复写入造成输出断续。
+        motor_write_pwm(config, 0.0f);
+        motor_set_direction(config, direction);
+        if (motor_index >= 0) {
+            s_motor_direction[motor_index] = direction;
+            s_motor_direction_valid[motor_index] = 1U;
         }
     }
 
-    return -1;
+    motor_write_pwm(config, speed_magnitude);
+}
+
+void motor_stop(motor_config config) {
+    int32_t motor_index;
+
+    if (!motor_config_is_valid(config)) {
+        return;
+    }
+
+    motor_write_pwm(config, 0.0f);
+    HAL_GPIO_WritePin(config.in1_port, config.in1_pin, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(config.in2_port, config.in2_pin, GPIO_PIN_RESET);
+
+    motor_index = motor_find_index(config);
+    if (motor_index >= 0) {
+        s_motor_direction_valid[motor_index] = 0U;
+    }
+}
+
+void motor_brake(motor_config config) {
+    int32_t motor_index;
+
+    if (!motor_config_is_valid(config)) {
+        return;
+    }
+
+    motor_write_pwm(config, 0.0f);
+    HAL_GPIO_WritePin(config.in1_port, config.in1_pin, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(config.in2_port, config.in2_pin, GPIO_PIN_SET);
+
+    motor_index = motor_find_index(config);
+    if (motor_index >= 0) {
+        s_motor_direction_valid[motor_index] = 0U;
+    }
 }
 
 void encoder_init(void) {
     uint32_t i;
 
-    for (i = 0; i < encoder_count; i++) {
+    for (i = 0; i < MOTOR_COUNT; i++) {
         Encoder_Motion[i] = (encoder_motion_data){0};
         if (Encoder_Config[i].htim == NULL) {
             continue;
@@ -156,15 +363,14 @@ void encoder_update_motion(float sample_period_s) {
         return;
     }
 
-    for (i = 0; i < encoder_count; i++) {
+    for (i = 0; i < MOTOR_COUNT; i++) {
         int16_t delta_count = encoder_get_delta_count(&Encoder_Config[i]);
         float raw_speed_rpm = (float)delta_count * 60.0f /
                               (counts_per_revolution * sample_period_s);
 
         Encoder_Motion[i].rotational_speed_rpm = raw_speed_rpm;
         Encoder_Motion[i].linear_speed_m_s =
-            Encoder_Motion[i].rotational_speed_rpm * ENCODER_PI_F *
-            ENCODER_WHEEL_DIAMETER_M / 60.0f;
+            raw_speed_rpm * ENCODER_PI_F * ENCODER_WHEEL_DIAMETER_M / 60.0f;
         Encoder_Motion[i].distance_m =
             (float)Encoder_Config[i].total_count * ENCODER_PI_F *
             ENCODER_WHEEL_DIAMETER_M / counts_per_revolution;
@@ -172,7 +378,7 @@ void encoder_update_motion(float sample_period_s) {
 }
 
 const encoder_motion_data *encoder_get_motion_data(uint32_t motor_index) {
-    if (motor_index >= encoder_count) {
+    if (motor_index >= MOTOR_COUNT) {
         return NULL;
     }
 
@@ -183,7 +389,7 @@ HAL_StatusTypeDef encoder_send_motor_motion_report(UART_HandleTypeDef *huart,
                                                    uint32_t motor_index) {
     int written;
 
-    if (huart == NULL || motor_index >= encoder_count) {
+    if (huart == NULL || motor_index >= MOTOR_COUNT) {
         return HAL_ERROR;
     }
 
@@ -209,7 +415,7 @@ HAL_StatusTypeDef encoder_send_motion_report(UART_HandleTypeDef *huart) {
         return HAL_ERROR;
     }
 
-    for (i = 0; i < encoder_count; i++) {
+    for (i = 0; i < MOTOR_COUNT; i++) {
         size_t remaining = sizeof(s_report_buffer) - used;
         int written = encoder_format_report_line(&s_report_buffer[used],
                                                  remaining,
@@ -227,8 +433,7 @@ HAL_StatusTypeDef encoder_send_motion_report(UART_HandleTypeDef *huart) {
                              ENCODER_UART_TIMEOUT_MS);
 }
 
-void
-encoder_motion_report_process(void) {
+void encoder_motion_report_process(void) {
     uint32_t current_tick = HAL_GetTick();
     uint32_t elapsed_ms = current_tick - s_last_report_tick;
 
@@ -240,7 +445,6 @@ encoder_motion_report_process(void) {
     encoder_update_motion((float)elapsed_ms / 1000.0f);
     (void)encoder_send_motion_report(ENCODER_REPORT_UART_HANDLE);
 }
-
 
 HAL_StatusTypeDef encoder_send_counter_report(UART_HandleTypeDef *huart) {
     uint16_t tim2_count;
