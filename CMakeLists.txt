@@ -55,6 +55,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     App/lib/hcsr04_oled/HC-SR04_OLED.c
     App/lib/imu_fusion/imu_fusion.c
     App/lib/imu_service/app_imu.c
+    App/lib/l1_adaptive/l1_adaptive.c
 )
 
 # Font tables intentionally use flattened aggregate initializers.
@@ -74,6 +75,7 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/App/lib/hcsr04_oled
     ${CMAKE_CURRENT_SOURCE_DIR}/App/lib/imu_fusion
     ${CMAKE_CURRENT_SOURCE_DIR}/App/lib/imu_service
+    ${CMAKE_CURRENT_SOURCE_DIR}/App/lib/l1_adaptive
 )
 
 # Add project symbols (macros)
