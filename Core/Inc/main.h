@@ -61,6 +61,8 @@ void Error_Handler(void);
 #define PWMA1_GPIO_Port GPIOE
 #define PWMB1_Pin GPIO_PIN_6
 #define PWMB1_GPIO_Port GPIOE
+#define User_LED_Pin GPIO_PIN_0
+#define User_LED_GPIO_Port GPIOC
 #define H2A_Pin GPIO_PIN_12
 #define H2A_GPIO_Port GPIOD
 #define H2B_Pin GPIO_PIN_13
