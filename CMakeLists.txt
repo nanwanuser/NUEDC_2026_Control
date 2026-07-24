@@ -44,25 +44,29 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
-    App/drivers/encoder/Encoder.c
     App/drivers/gray_sensor/Gray_Sensor.c
     App/drivers/icm42688p/icm42688p.c
+    App/drivers/motor/motor.c
     App/drivers/servo/Servo.c
-    App/drivers/tb6612/TB6612.c
     App/lib/imu_fusion/imu_fusion.c
     App/lib/imu_service/app_imu.c
+    App/lib/simulink_pid/simulink_pid_ert_rtw/simulink_pid.c
+    App/lib/simulink_pid/simulink_pid_ert_rtw/simulink_pid_data.c
+    Task/motor_speed_control/motor_speed_control.c
 )
 
 
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/App/drivers/encoder
     ${CMAKE_CURRENT_SOURCE_DIR}/App/drivers/gray_sensor
     ${CMAKE_CURRENT_SOURCE_DIR}/App/drivers/icm42688p
+    ${CMAKE_CURRENT_SOURCE_DIR}/App/drivers/motor
     ${CMAKE_CURRENT_SOURCE_DIR}/App/drivers/servo
-    ${CMAKE_CURRENT_SOURCE_DIR}/App/drivers/tb6612
     ${CMAKE_CURRENT_SOURCE_DIR}/App/lib/imu_fusion
     ${CMAKE_CURRENT_SOURCE_DIR}/App/lib/imu_service
+    ${CMAKE_CURRENT_SOURCE_DIR}/App/lib/simulink_pid
+    ${CMAKE_CURRENT_SOURCE_DIR}/App/lib/simulink_pid/simulink_pid_ert_rtw
+    ${CMAKE_CURRENT_SOURCE_DIR}/Task/motor_speed_control
 )
 
 # Add project symbols (macros)
@@ -76,6 +80,7 @@ list(REMOVE_ITEM CMAKE_C_IMPLICIT_LINK_LIBRARIES ob)
 # Add linked libraries
 target_link_libraries(${CMAKE_PROJECT_NAME}
     stm32cubemx
+    m
 
     # Add user defined libraries
 )

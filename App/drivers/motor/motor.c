@@ -78,11 +78,26 @@ static uint32_t s_last_report_tick;
 static uint32_t s_last_counter_report_tick;
 static char s_report_buffer[ENCODER_REPORT_BUFFER_SIZE];
 static char s_counter_report_buffer[ENCODER_COUNTER_REPORT_BUFFER_SIZE];
+static Motor_Direction s_motor_direction[MOTOR_COUNT];
+static uint8_t s_motor_direction_valid[MOTOR_COUNT];
 
 static uint8_t motor_config_is_valid(motor_config config) {
     return config.htim != NULL &&
            config.in1_port != NULL &&
            config.in2_port != NULL;
+}
+
+static int32_t motor_find_index(motor_config config) {
+    uint32_t i;
+
+    for (i = 0; i < MOTOR_COUNT; i++) {
+        if (config.htim == Motor_Config[i].htim &&
+            config.channel == Motor_Config[i].channel) {
+            return (int32_t)i;
+        }
+    }
+
+    return -1;
 }
 
 static void motor_write_pwm(motor_config config, float speed_magnitude) {
@@ -179,6 +194,7 @@ void motor_init(void) {
     uint32_t i;
 
     for (i = 0; i < MOTOR_COUNT; i++) {
+        s_motor_direction_valid[i] = 0U;
         if (!motor_config_is_valid(Motor_Config[i])) {
             continue;
         }
@@ -193,6 +209,7 @@ void motor_init(void) {
 void motor_set_speed(motor_config config, float speed) {
     float speed_magnitude;
     Motor_Direction direction;
+    int32_t motor_index;
 
     if (!motor_config_is_valid(config)) {
         return;
@@ -217,13 +234,25 @@ void motor_set_speed(motor_config config, float speed) {
         direction = motor_get_reverse_direction(config.positive_direction);
     }
 
-    // 改变 H 桥方向前先关闭 PWM，避免带负载直接换向。
-    motor_write_pwm(config, 0.0f);
-    motor_set_direction(config, direction);
+    motor_index = motor_find_index(config);
+    if (motor_index < 0 ||
+        !s_motor_direction_valid[motor_index] ||
+        s_motor_direction[motor_index] != direction) {
+        // 仅在方向变化前关闭 PWM，避免闭环重复写入造成输出断续。
+        motor_write_pwm(config, 0.0f);
+        motor_set_direction(config, direction);
+        if (motor_index >= 0) {
+            s_motor_direction[motor_index] = direction;
+            s_motor_direction_valid[motor_index] = 1U;
+        }
+    }
+
     motor_write_pwm(config, speed_magnitude);
 }
 
 void motor_stop(motor_config config) {
+    int32_t motor_index;
+
     if (!motor_config_is_valid(config)) {
         return;
     }
@@ -231,9 +260,16 @@ void motor_stop(motor_config config) {
     motor_write_pwm(config, 0.0f);
     HAL_GPIO_WritePin(config.in1_port, config.in1_pin, GPIO_PIN_RESET);
     HAL_GPIO_WritePin(config.in2_port, config.in2_pin, GPIO_PIN_RESET);
+
+    motor_index = motor_find_index(config);
+    if (motor_index >= 0) {
+        s_motor_direction_valid[motor_index] = 0U;
+    }
 }
 
 void motor_brake(motor_config config) {
+    int32_t motor_index;
+
     if (!motor_config_is_valid(config)) {
         return;
     }
@@ -241,6 +277,11 @@ void motor_brake(motor_config config) {
     motor_write_pwm(config, 0.0f);
     HAL_GPIO_WritePin(config.in1_port, config.in1_pin, GPIO_PIN_SET);
     HAL_GPIO_WritePin(config.in2_port, config.in2_pin, GPIO_PIN_SET);
+
+    motor_index = motor_find_index(config);
+    if (motor_index >= 0) {
+        s_motor_direction_valid[motor_index] = 0U;
+    }
 }
 
 void encoder_init(void) {

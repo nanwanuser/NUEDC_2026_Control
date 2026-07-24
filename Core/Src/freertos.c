@@ -25,7 +25,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "Encoder.h"
+#include "motor_speed_control.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -35,7 +35,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define ENCODER_TASK_LOOP_DELAY_MS 10U
+#define MOTOR_CONTROL_TASK_PERIOD_TICKS MOTOR_SPEED_CONTROL_PERIOD_MS
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -51,7 +51,7 @@
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
-  .stack_size = 128 * 4,
+  .stack_size = 512 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
 
@@ -114,11 +114,17 @@ void MX_FREERTOS_Init(void) {
 void StartDefaultTask(void *argument)
 {
   /* USER CODE BEGIN StartDefaultTask */
+  uint32_t next_wake_tick = osKernelGetTickCount();
+
+  (void)argument;
+  motor_speed_control_init();
+
   /* Infinite loop */
   for(;;)
   {
-    encoder_motion_report_process();
-    osDelay(ENCODER_TASK_LOOP_DELAY_MS);
+    motor_speed_control_process();
+    next_wake_tick += MOTOR_CONTROL_TASK_PERIOD_TICKS;
+    osDelayUntil(next_wake_tick);
   }
   /* USER CODE END StartDefaultTask */
 }

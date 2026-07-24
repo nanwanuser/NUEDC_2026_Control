@@ -26,8 +26,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "Encoder.h"
-#include "TB6612.h"
+#include "motor.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -48,15 +47,7 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-motor_config Motor_Config[motor_count] = {
-  {&htim9, TIM_CHANNEL_1, AIN1_GPIO_Port, AIN1_Pin, AIN2_GPIO_Port, AIN2_Pin},
-  {&htim9, TIM_CHANNEL_2, BIN1_GPIO_Port, BIN1_Pin, BIN2_GPIO_Port, BIN2_Pin},
-};
 
-encoder_config Encoder_Config[encoder_count] = {
-  {&htim2, 0, 0},
-  {&htim4, 0, 0},
-};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -108,21 +99,6 @@ int main(void)
   MX_SPI1_Init();
   /* USER CODE BEGIN 2 */
   motor_init();
-  encoder_init();
-
-  set_direction(Motor_Config[0], CCW);
-  motor_set_speed(Motor_Config[0], 400.0f);
-
-  set_direction(Motor_Config[1], CW);
-  motor_set_speed(Motor_Config[1], 4+00.0f);
-
-
-  while (1) {
-
-    encoder_motion_report_process();
-    encoder_counter_report_process();
-
-  }
 
   /* USER CODE END 2 */
 
