@@ -25,7 +25,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "motor_speed_control.h"
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -35,7 +35,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define MOTOR_CONTROL_TASK_PERIOD_TICKS MOTOR_SPEED_CONTROL_PERIOD_MS
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -136,17 +136,19 @@ void MX_FREERTOS_Init(void) {
 void StartDefaultTask(void *argument)
 {
   /* USER CODE BEGIN StartDefaultTask */
-  uint32_t next_wake_tick = osKernelGetTickCount();
-
   (void)argument;
-  motor_speed_control_init();
 
   /* Infinite loop */
-  for(;;)
+  for (;;)
   {
-    motor_speed_control_process();
-    next_wake_tick += MOTOR_CONTROL_TASK_PERIOD_TICKS;
-    osDelayUntil(next_wake_tick);
+    HAL_GPIO_WritePin(User_LED_GPIO_Port, User_LED_Pin, GPIO_PIN_SET);
+    osDelay(70U);
+    HAL_GPIO_WritePin(User_LED_GPIO_Port, User_LED_Pin, GPIO_PIN_RESET);
+    osDelay(245U);
+    HAL_GPIO_WritePin(User_LED_GPIO_Port, User_LED_Pin, GPIO_PIN_SET);
+    osDelay(70U);
+    HAL_GPIO_WritePin(User_LED_GPIO_Port, User_LED_Pin, GPIO_PIN_RESET);
+    osDelay(875U);
   }
   /* USER CODE END StartDefaultTask */
 }
