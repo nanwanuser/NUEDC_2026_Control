@@ -35,13 +35,31 @@ void motor_set_speed(motor_config Motor_Config,float speed) {
         return;
     }
 
-    if (speed < 0.0f) {
-        speed = 0.0f;
-    } else if (speed > 1000.0f) {
-        speed = 1000.0f;
+    if (speed < MOTOR_SPEED_COMMAND_MIN) {
+        speed = MOTOR_SPEED_COMMAND_MIN;
+    } else if (speed > MOTOR_SPEED_COMMAND_MAX) {
+        speed = MOTOR_SPEED_COMMAND_MAX;
     }
     compare = (uint32_t)(speed * 10.0f);
     __HAL_TIM_SET_COMPARE(Motor_Config.htim,Motor_Config.channel,compare);
+}
+
+void motor_set_duty_percent(motor_config Motor_Config, float duty_percent) {
+    uint32_t period;
+    uint32_t compare;
+
+    if (!motor_config_is_valid(Motor_Config)) {
+        return;
+    }
+    if (duty_percent < MOTOR_DUTY_PERCENT_MIN) {
+        duty_percent = MOTOR_DUTY_PERCENT_MIN;
+    } else if (duty_percent > MOTOR_DUTY_PERCENT_MAX) {
+        duty_percent = MOTOR_DUTY_PERCENT_MAX;
+    }
+
+    period = __HAL_TIM_GET_AUTORELOAD(Motor_Config.htim) + 1U;
+    compare = (uint32_t)(duty_percent * (float)period / 100.0f + 0.5f);
+    __HAL_TIM_SET_COMPARE(Motor_Config.htim, Motor_Config.channel, compare);
 }
 
 void set_direction(motor_config Motor_Config,Motor_Direction direction) {

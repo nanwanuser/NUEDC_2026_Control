@@ -28,6 +28,7 @@
 /* USER CODE BEGIN Includes */
 #include "Encoder.h"
 #include "TB6612.h"
+#include "motor_task.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -107,22 +108,6 @@ int main(void)
   MX_USART1_UART_Init();
   MX_SPI1_Init();
   /* USER CODE BEGIN 2 */
-  motor_init();
-  encoder_init();
-
-  set_direction(Motor_Config[0], CCW);
-  motor_set_speed(Motor_Config[0], 400.0f);
-
-  set_direction(Motor_Config[1], CW);
-  motor_set_speed(Motor_Config[1], 4+00.0f);
-
-
-  while (1) {
-
-    encoder_motion_report_process();
-    encoder_counter_report_process();
-
-  }
 
   /* USER CODE END 2 */
 

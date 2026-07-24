@@ -10,6 +10,12 @@
 //驱动点击数量
 #define motor_count 2U
 
+// ???????????????
+#define MOTOR_SPEED_COMMAND_MIN 0.0f
+#define MOTOR_SPEED_COMMAND_MAX 1000.0f
+#define MOTOR_DUTY_PERCENT_MIN 0.0f
+#define MOTOR_DUTY_PERCENT_MAX 100.0f
+
 #include "stm32f407xx.h"
 //#include "stm32f4xx_hal_tim.h"
 #include "tim.h"
@@ -43,6 +49,13 @@ void motor_init(void);
 //@speed 设置新的速度 0.0~1000.0，超出范围会自动限幅
 //建议ARR配置为9999
 void motor_set_speed(motor_config Motor_Config,float speed) ;
+
+/**
+ * @brief ???????? PWM ????
+ * @param Motor_Config ???????
+ * @param duty_percent ????????? 0~100?????????
+ */
+void motor_set_duty_percent(motor_config Motor_Config, float duty_percent);
 
 //电机方向设置函数
 //@Motor_Config 电机配置结构体

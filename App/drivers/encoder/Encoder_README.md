@@ -382,3 +382,14 @@ delta_count = (int16_t)(current_count - Encoder_Config->last_count);
 - `Encoder_Config[]`
 - 对应的 `MX_TIMx_Init()`
 - CubeMX 中的编码器引脚和定时器映射
+
+## 9. 当前工程参数
+
+MG310 + MGR 当前使用：
+```c
+#define ENCODER_PULSES_PER_MOTOR_REV 500.0f
+#define ENCODER_GEAR_RATIO 20.409f
+#define ENCODER_QUADRATURE_MULTIPLIER 4.0f
+#define ENCODER_WHEEL_DIAMETER_M 0.038f
+```
+`encoder_update_motion()` 直接计算原始 RPM、线速度和距离；速度滤波已取消。模式 2 可手动转动一圈，以 USART1 输出的 `COUNT` 差值核对实际每圈计数。

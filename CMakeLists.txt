@@ -51,6 +51,8 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     App/drivers/tb6612/TB6612.c
     App/lib/imu_fusion/imu_fusion.c
     App/lib/imu_service/app_imu.c
+    App/lib/speed_pid/speed_pid.c
+    Task/motor_task/motor_task.c
 )
 
 
@@ -63,6 +65,8 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/App/drivers/tb6612
     ${CMAKE_CURRENT_SOURCE_DIR}/App/lib/imu_fusion
     ${CMAKE_CURRENT_SOURCE_DIR}/App/lib/imu_service
+    ${CMAKE_CURRENT_SOURCE_DIR}/App/lib/speed_pid
+    ${CMAKE_CURRENT_SOURCE_DIR}/Task/motor_task
 )
 
 # Add project symbols (macros)

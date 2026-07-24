@@ -31,11 +31,11 @@
 #endif
 
 #ifndef ENCODER_WHEEL_DIAMETER_M
-#define ENCODER_WHEEL_DIAMETER_M 0.05f
+#define ENCODER_WHEEL_DIAMETER_M 0.038f
 #endif
 
 #ifndef ENCODER_REPORT_PERIOD_MS
-#define ENCODER_REPORT_PERIOD_MS 50U
+#define ENCODER_REPORT_PERIOD_MS 100U
 #endif
 
 #ifndef ENCODER_COUNTER_REPORT_PERIOD_MS
@@ -111,6 +111,15 @@ void encoder_update_motion(float sample_period_s);
  * @return 运动数据只读指针；索引无效时返回 NULL。
  */
 const encoder_motion_data *encoder_get_motion_data(uint32_t motor_index);
+
+/**
+ * @brief 将指定电机的运动数据通过指定串口发送。
+ * @param huart UART 句柄；传入 NULL 时返回 HAL_ERROR。
+ * @param motor_index 电机索引，范围为 0 到 encoder_count - 1。
+ * @return HAL 串口发送状态；参数无效时返回 HAL_ERROR。
+ */
+HAL_StatusTypeDef encoder_send_motor_motion_report(UART_HandleTypeDef *huart,
+                                                   uint32_t motor_index);
 
 /**
  * @brief 将两路电机运动数据通过指定串口发送。

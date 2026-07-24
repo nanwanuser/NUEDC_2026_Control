@@ -8,7 +8,7 @@
 
 #define ENCODER_PI_F 3.14159265358979323846f
 #define ENCODER_MILLI_SCALE 1000.0f
-#define ENCODER_REPORT_BUFFER_SIZE 192U
+#define ENCODER_REPORT_BUFFER_SIZE 256U
 #define ENCODER_COUNTER_REPORT_BUFFER_SIZE 64U
 
 // 未提供板级强配置时，驱动保持安全空配置。
@@ -45,18 +45,24 @@ static int encoder_format_report_line(char *buffer,
                                       const encoder_motion_data *motion) {
     int32_t rpm_milli = encoder_float_to_milli(motion->rotational_speed_rpm);
     int32_t speed_milli = encoder_float_to_milli(motion->linear_speed_m_s);
+    int32_t distance_milli = encoder_float_to_milli(motion->distance_m);
     uint32_t rpm_abs = encoder_abs_milli(rpm_milli);
     uint32_t speed_abs = encoder_abs_milli(speed_milli);
+    uint32_t distance_abs = encoder_abs_milli(distance_milli);
 
     return snprintf(buffer, buffer_size,
-                    "Motor%lu: RPM=%s%lu.%03lu rpm, speed=%s%lu.%03lu m/s\r\n",
+                    "Motor%lu: RPM=%s%lu.%03lu rpm, speed=%s%lu.%03lu m/s, "
+                    "distance=%s%lu.%03lu m\r\n",
                     (unsigned long)(motor_index + 1U),
                     rpm_milli < 0 ? "-" : "",
                     (unsigned long)(rpm_abs / 1000U),
                     (unsigned long)(rpm_abs % 1000U),
                     speed_milli < 0 ? "-" : "",
                     (unsigned long)(speed_abs / 1000U),
-                    (unsigned long)(speed_abs % 1000U));
+                    (unsigned long)(speed_abs % 1000U),
+                    distance_milli < 0 ? "-" : "",
+                    (unsigned long)(distance_abs / 1000U),
+                    (unsigned long)(distance_abs % 1000U));
 }
 
 static int32_t encoder_find_index(const encoder_config *config) {
@@ -152,10 +158,10 @@ void encoder_update_motion(float sample_period_s) {
 
     for (i = 0; i < encoder_count; i++) {
         int16_t delta_count = encoder_get_delta_count(&Encoder_Config[i]);
+        float raw_speed_rpm = (float)delta_count * 60.0f /
+                              (counts_per_revolution * sample_period_s);
 
-        Encoder_Motion[i].rotational_speed_rpm =
-            (float)delta_count * 60.0f /
-            (counts_per_revolution * sample_period_s);
+        Encoder_Motion[i].rotational_speed_rpm = raw_speed_rpm;
         Encoder_Motion[i].linear_speed_m_s =
             Encoder_Motion[i].rotational_speed_rpm * ENCODER_PI_F *
             ENCODER_WHEEL_DIAMETER_M / 60.0f;
@@ -171,6 +177,28 @@ const encoder_motion_data *encoder_get_motion_data(uint32_t motor_index) {
     }
 
     return &Encoder_Motion[motor_index];
+}
+
+HAL_StatusTypeDef encoder_send_motor_motion_report(UART_HandleTypeDef *huart,
+                                                   uint32_t motor_index) {
+    int written;
+
+    if (huart == NULL || motor_index >= encoder_count) {
+        return HAL_ERROR;
+    }
+
+    written = encoder_format_report_line(s_report_buffer,
+                                         sizeof(s_report_buffer),
+                                         motor_index,
+                                         &Encoder_Motion[motor_index]);
+    if (written < 0 || (size_t)written >= sizeof(s_report_buffer)) {
+        return HAL_ERROR;
+    }
+
+    return HAL_UART_Transmit(huart,
+                             (uint8_t *)s_report_buffer,
+                             (uint16_t)written,
+                             ENCODER_UART_TIMEOUT_MS);
 }
 
 HAL_StatusTypeDef encoder_send_motion_report(UART_HandleTypeDef *huart) {
