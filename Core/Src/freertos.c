@@ -25,7 +25,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "Encoder.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -35,7 +35,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define ENCODER_TASK_LOOP_DELAY_MS 10U
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -117,7 +117,8 @@ void StartDefaultTask(void *argument)
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+    encoder_motion_report_process();
+    osDelay(ENCODER_TASK_LOOP_DELAY_MS);
   }
   /* USER CODE END StartDefaultTask */
 }

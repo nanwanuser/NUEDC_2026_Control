@@ -46,32 +46,21 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     App/drivers/encoder/Encoder.c
     App/drivers/gray_sensor/Gray_Sensor.c
-    App/drivers/hc_sr04/HC-SR04.c
     App/drivers/icm42688p/icm42688p.c
-    App/drivers/oled/OLED.c
-    App/drivers/oled/OLED_Data.c
     App/drivers/servo/Servo.c
     App/drivers/tb6612/TB6612.c
-    App/lib/hcsr04_oled/HC-SR04_OLED.c
     App/lib/imu_fusion/imu_fusion.c
     App/lib/imu_service/app_imu.c
 )
 
-# Font tables intentionally use flattened aggregate initializers.
-set_source_files_properties(App/drivers/oled/OLED_Data.c PROPERTIES
-    COMPILE_OPTIONS "-Wno-missing-braces"
-)
 
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/App/drivers/encoder
     ${CMAKE_CURRENT_SOURCE_DIR}/App/drivers/gray_sensor
-    ${CMAKE_CURRENT_SOURCE_DIR}/App/drivers/hc_sr04
     ${CMAKE_CURRENT_SOURCE_DIR}/App/drivers/icm42688p
-    ${CMAKE_CURRENT_SOURCE_DIR}/App/drivers/oled
     ${CMAKE_CURRENT_SOURCE_DIR}/App/drivers/servo
     ${CMAKE_CURRENT_SOURCE_DIR}/App/drivers/tb6612
-    ${CMAKE_CURRENT_SOURCE_DIR}/App/lib/hcsr04_oled
     ${CMAKE_CURRENT_SOURCE_DIR}/App/lib/imu_fusion
     ${CMAKE_CURRENT_SOURCE_DIR}/App/lib/imu_service
 )

@@ -19,7 +19,6 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "cmsis_os.h"
-#include "dma.h"
 #include "spi.h"
 #include "tim.h"
 #include "usart.h"
@@ -27,7 +26,8 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "Encoder.h"
+#include "TB6612.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -48,7 +48,15 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
+motor_config Motor_Config[motor_count] = {
+  {&htim9, TIM_CHANNEL_1, AIN1_GPIO_Port, AIN1_Pin, AIN2_GPIO_Port, AIN2_Pin},
+  {&htim9, TIM_CHANNEL_2, BIN1_GPIO_Port, BIN1_Pin, BIN2_GPIO_Port, BIN2_Pin},
+};
 
+encoder_config Encoder_Config[encoder_count] = {
+  {&htim2, 0, 0},
+  {&htim4, 0, 0},
+};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -92,11 +100,29 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
-  MX_DMA_Init();
-  MX_SPI1_Init();
-  MX_USART1_UART_Init();
   MX_TIM1_Init();
+  MX_TIM9_Init();
+  MX_TIM2_Init();
+  MX_TIM4_Init();
+  MX_USART1_UART_Init();
+  MX_SPI1_Init();
   /* USER CODE BEGIN 2 */
+  motor_init();
+  encoder_init();
+
+  set_direction(Motor_Config[0], CCW);
+  motor_set_speed(Motor_Config[0], 400.0f);
+
+  set_direction(Motor_Config[1], CW);
+  motor_set_speed(Motor_Config[1], 4+00.0f);
+
+
+  while (1) {
+
+    encoder_motion_report_process();
+    encoder_counter_report_process();
+
+  }
 
   /* USER CODE END 2 */
 
@@ -171,7 +197,7 @@ void SystemClock_Config(void)
 
 /**
   * @brief  Period elapsed callback in non blocking mode
-  * @note   This function is called  when TIM4 interrupt took place, inside
+  * @note   This function is called  when TIM6 interrupt took place, inside
   * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
   * a global variable "uwTick" used as application time base.
   * @param  htim : TIM handle
@@ -182,7 +208,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
   /* USER CODE BEGIN Callback 0 */
 
   /* USER CODE END Callback 0 */
-  if (htim->Instance == TIM4)
+  if (htim->Instance == TIM6)
   {
     HAL_IncTick();
   }
