@@ -47,23 +47,24 @@ chassis_brake();
 
 | 通道位置 | 左轮 | 右轮 |
 | --- | ---: | ---: |
-| 0，急左转 | 0 | 250 |
-| 1、2，普通左转 | 68 | 234 |
-| 3，轻微左转 | 148 | 228 |
-| 3、4 居中 | 200 | 200 |
-| 4，轻微右转 | 228 | 148 |
-| 5、6，普通右转 | 234 | 68 |
-| 7，急右转 | 250 | 0 |
+| 0，急左转 | -130 | 300 |
+| 1、2，普通左转 | 124 | 180 |
+| 3，轻微左转 | 132 | 176 |
+| 3、4 居中 | 160 | 160 |
+| 4，轻微右转 | 176 | 132 |
+| 5、6，普通右转 | 180 | 124 |
+| 7，急右转 | 300 | -130 |
 
-丢线后，小车会按最后一次偏差方向使用单侧轮搜索；持续 `TRACK_LINE_LOST_STOP_MS` 仍未找到线时自然停止。上电时如果没有检测到线，小车保持停止。
+正常巡线后丢线时，小车会以 `TRACK_LINE_LOST_REVERSE_SPEED` 直线后退并持续寻找轨迹；重新检测到线后恢复正常巡线，持续 `TRACK_LINE_LOST_STOP_MS` 仍未找到线时自然停止。上电时如果没有检测到线，小车保持停止。
 
 主要调参项位于 `track_line.h`：
 
-- `TRACK_LINE_BASE_SPEED`：直线基础速度，默认 `200`
+- `CHASSIS_TASK_PERIOD_MS`：灰度检测与底盘输出周期，默认 `5 ms`（约 `200 Hz`）
+- `TRACK_LINE_BASE_SPEED`：直线基础速度，默认 `160`
 - `TRACK_LINE_SLIGHT_INNER_SPEED`、`TRACK_LINE_SLIGHT_OUTER_SPEED`：轻微转向轮速
 - `TRACK_LINE_NORMAL_INNER_SPEED`、`TRACK_LINE_NORMAL_OUTER_SPEED`：普通转向轮速
 - `TRACK_LINE_SHARP_INNER_SPEED`、`TRACK_LINE_SHARP_OUTER_SPEED`：急转轮速
-- `TRACK_LINE_LOST_SEARCH_SPEED`：丢线搜索速度，默认 `200`
+- `TRACK_LINE_LOST_REVERSE_SPEED`：丢线后退速度，默认 `160`
 - `TRACK_LINE_LOST_STOP_MS`：丢线停止时间
 
 调用 `track_line_disable()` 可以停止自动巡线，之后可使用底盘接口手动控制；调用 `track_line_enable()` 恢复自动巡线。

@@ -55,7 +55,7 @@ static chassis_command s_chassis_command;
 static uint8_t s_track_line_enabled;
 static uint8_t s_sensor_data;
 static uint8_t s_line_detected;
-static int8_t s_search_direction;
+static uint8_t s_has_seen_line;
 static float s_line_error;
 static uint32_t s_lost_time_ms;
 
@@ -155,17 +155,14 @@ static void track_line_handle_lost(void) {
         s_lost_time_ms += CHASSIS_TASK_PERIOD_MS;
     }
 
-    if (s_search_direction == 0 ||
+    if (s_has_seen_line == 0U ||
         s_lost_time_ms >= TRACK_LINE_LOST_STOP_MS) {
         chassis_stop();
         return;
     }
 
-    if (s_search_direction > 0) {
-        chassis_set_wheel_speed(0.0f, TRACK_LINE_LOST_SEARCH_SPEED);
-    } else {
-        chassis_set_wheel_speed(TRACK_LINE_LOST_SEARCH_SPEED, 0.0f);
-    }
+    chassis_set_wheel_speed(-TRACK_LINE_LOST_REVERSE_SPEED,
+                            -TRACK_LINE_LOST_REVERSE_SPEED);
 }
 
 static void chassis_save_command(chassis_mode mode,
@@ -278,7 +275,7 @@ void chassis_process(void) {
 void track_line_init(void) {
     s_sensor_data = 0U;
     s_line_detected = 0U;
-    s_search_direction = 0;
+    s_has_seen_line = 0U;
     s_line_error = 0.0f;
     s_lost_time_ms = 0U;
     s_track_line_enabled = track_line_sensor_is_valid();
@@ -309,20 +306,15 @@ void track_line_process(void) {
     }
 
     s_lost_time_ms = 0U;
+    s_has_seen_line = 1U;
     s_line_error = current_error;
-
-    if (current_error > 0.25f) {
-        s_search_direction = 1;
-    } else if (current_error < -0.25f) {
-        s_search_direction = -1;
-    }
 
     track_line_apply_steering(current_error);
 }
 
 void track_line_enable(void) {
     s_line_detected = 0U;
-    s_search_direction = 0;
+    s_has_seen_line = 0U;
     s_line_error = 0.0f;
     s_lost_time_ms = 0U;
     s_track_line_enabled = track_line_sensor_is_valid();
