@@ -17,7 +17,6 @@
 #define ICM42688_ACCEL_AAF_STATIC4_DEFAULT   ((uint8_t)0xC0U)
 
 #define ICM42688_SPI_DMA_BUFFER_SIZE         ((uint16_t)256U)
-
 typedef enum
 {
     ICM42688_SPI_DMA_IDLE = 0,

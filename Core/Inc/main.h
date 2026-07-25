@@ -63,10 +63,11 @@ void Error_Handler(void);
 #define PWMB1_GPIO_Port GPIOE
 #define User_LED_Pin GPIO_PIN_0
 #define User_LED_GPIO_Port GPIOC
-#define H2A_Pin GPIO_PIN_12
-#define H2A_GPIO_Port GPIOD
-#define H2B_Pin GPIO_PIN_13
-#define H2B_GPIO_Port GPIOD
+#define ICM42688P_CS_Pin GPIO_PIN_4
+#define ICM42688P_CS_GPIO_Port GPIOA
+#define ICM42688_INT1_Pin GPIO_PIN_4
+#define ICM42688_INT1_GPIO_Port GPIOC
+#define ICM42688_INT1_EXTI_IRQn EXTI4_IRQn
 #define GRAY_OUT_Pin GPIO_PIN_8
 #define GRAY_OUT_GPIO_Port GPIOD
 #define GRAY_AD0_Pin GPIO_PIN_9
@@ -75,6 +76,10 @@ void Error_Handler(void);
 #define GRAY_AD1_GPIO_Port GPIOD
 #define GRAY_AD2_Pin GPIO_PIN_11
 #define GRAY_AD2_GPIO_Port GPIOD
+#define H2A_Pin GPIO_PIN_12
+#define H2A_GPIO_Port GPIOD
+#define H2B_Pin GPIO_PIN_13
+#define H2B_GPIO_Port GPIOD
 #define BIN2_Pin GPIO_PIN_8
 #define BIN2_GPIO_Port GPIOA
 #define BIN1_Pin GPIO_PIN_9
