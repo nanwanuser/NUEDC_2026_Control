@@ -45,6 +45,7 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
+volatile HAL_StatusTypeDef gimbal_ctrl_status = HAL_ERROR;
 
 /* USER CODE END Variables */
 /* Definitions for defaultTask */
@@ -181,8 +182,10 @@ __weak void Track_line_App(void *argument)
 __weak void Gimbal_ctrl_App(void *argument)
 {
   /* USER CODE BEGIN Gimbal_ctrl_App */
+  (void)argument;
+
   /* Infinite loop */
-  for(;;)
+  for (;;)
   {
     osDelay(1);
   }
