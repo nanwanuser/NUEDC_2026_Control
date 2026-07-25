@@ -6,6 +6,7 @@
 
 - `motor.h`：数据类型、参数和公共接口
 - `motor.c`：硬件配置、TB6612 控制和编码器处理
+- `motor_speed_control.h/.c`：双路编码器 PID 速度闭环
 
 ## 当前硬件配置
 
@@ -86,6 +87,31 @@ motor_brake(Motor_Config[1]);
 - `-1000`：按反方向输出 100% PWM
 
 函数会根据定时器 ARR 自动计算比较值，不再依赖固定的 `ARR=9999`。左右电机的正方向由 `Motor_Config[].positive_direction` 配置，修改接线后只需调整该字段。
+
+## PID 速度闭环
+
+`motor_set_speed()` 保留为底层 PWM 接口。底盘使用下面的接口设置目标车轮转速：
+
+```c
+motor_speed_control_set_target(0U, 160.0f);
+motor_speed_control_set_target(1U, 160.0f);
+```
+
+`defaultTask` 每 `1 ms` 调用 `motor_speed_control_process()`，持续读取两路编码器并更新 PWM。左右电机各自保存 PID 积分和微分滤波状态，不会互相干扰。PIDF 参数来自现有 `simulink_pid` 模型：
+
+```text
+Kp = 1.76391701674895
+Ki = 48.3950240418852
+Kd = 0.00485109028407955
+N  = 61.765222360892
+```
+
+模型原本针对负增益对象整定，速度环已转换为“车轮前进转速为正”的反馈形式。默认编码器符号为：
+
+- 电机 1：`MOTOR1_ENCODER_FORWARD_SIGN = -1`
+- 电机 2：`MOTOR2_ENCODER_FORWARD_SIGN = 1`
+
+如果某个车轮进入闭环后持续加速到饱和，应立即停止并修改对应的 `MOTORx_ENCODER_FORWARD_SIGN`。
 
 ## 编码器数据
 

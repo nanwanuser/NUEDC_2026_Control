@@ -25,6 +25,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "motor_speed_control.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -49,7 +50,7 @@
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
-  .stack_size = 128 * 4,
+  .stack_size = 512 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
 /* Definitions for Track_line */
@@ -134,12 +135,17 @@ void MX_FREERTOS_Init(void) {
 void StartDefaultTask(void *argument)
 {
   /* USER CODE BEGIN StartDefaultTask */
+  uint32_t next_wake_tick = osKernelGetTickCount();
+
   (void)argument;
+  motor_speed_control_init();
 
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+    motor_speed_control_process();
+    next_wake_tick += MOTOR_SPEED_CONTROL_PERIOD_MS;
+    osDelayUntil(next_wake_tick);
   }
   /* USER CODE END StartDefaultTask */
 }

@@ -47,6 +47,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     App/drivers/gray_sensor/Gray_Sensor.c
     App/drivers/icm42688p/icm42688p.c
     App/drivers/motor/motor.c
+    App/drivers/motor/motor_speed_control.c
     App/drivers/servo/Servo.c
     App/lib/imu_fusion/imu_fusion.c
     App/lib/imu_service/app_imu.c

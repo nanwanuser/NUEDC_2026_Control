@@ -1,7 +1,7 @@
 #ifndef TRACK_LINE_H
 #define TRACK_LINE_H
 
-#include "motor.h"
+#include "motor_speed_control.h"
 
 // 电机 1（Motor_Config[0]）对应左轮，电机 2（Motor_Config[1]）对应右轮。
 #ifndef CHASSIS_LEFT_MOTOR_INDEX
@@ -27,33 +27,33 @@
 #define TRACK_LINE_CHANNEL_0_IS_LEFT 1U
 #endif
 
-// 巡线速度分级，单位对应 motor 的 -1000~1000 命令范围。
+// 巡线速度分级，单位为车轮目标转速 rpm。
 #ifndef TRACK_LINE_BASE_SPEED
-#define TRACK_LINE_BASE_SPEED 160.0f
+#define TRACK_LINE_BASE_SPEED 80.0f
 #endif
 
 #ifndef TRACK_LINE_SLIGHT_INNER_SPEED
-#define TRACK_LINE_SLIGHT_INNER_SPEED 132.0f
+#define TRACK_LINE_SLIGHT_INNER_SPEED 68.0f
 #endif
 
 #ifndef TRACK_LINE_SLIGHT_OUTER_SPEED
-#define TRACK_LINE_SLIGHT_OUTER_SPEED 176.0f
+#define TRACK_LINE_SLIGHT_OUTER_SPEED 88.0f
 #endif
 
 #ifndef TRACK_LINE_NORMAL_INNER_SPEED
-#define TRACK_LINE_NORMAL_INNER_SPEED 124.0f
+#define TRACK_LINE_NORMAL_INNER_SPEED 64.0f
 #endif
 
 #ifndef TRACK_LINE_NORMAL_OUTER_SPEED
-#define TRACK_LINE_NORMAL_OUTER_SPEED 180.0f
+#define TRACK_LINE_NORMAL_OUTER_SPEED 90.0f
 #endif
 
 #ifndef TRACK_LINE_SHARP_INNER_SPEED
-#define TRACK_LINE_SHARP_INNER_SPEED -130.0f
+#define TRACK_LINE_SHARP_INNER_SPEED -80.0f
 #endif
 
 #ifndef TRACK_LINE_SHARP_OUTER_SPEED
-#define TRACK_LINE_SHARP_OUTER_SPEED 300.0f
+#define TRACK_LINE_SHARP_OUTER_SPEED 200.0f
 #endif
 
 #ifndef TRACK_LINE_NORMAL_ERROR_THRESHOLD
@@ -64,18 +64,19 @@
 #define TRACK_LINE_SHARP_ERROR_THRESHOLD 3.0f
 #endif
 
-// 丢线后先自然停止等待，再直线后退搜索。
-#ifndef TRACK_LINE_LOST_REVERSE_DELAY_MS
-#define TRACK_LINE_LOST_REVERSE_DELAY_MS 50U
+// 丢线持续超过该时间后，对重新捕获的轨迹进行稳定确认。
+#ifndef TRACK_LINE_LOST_CONFIRM_MS
+#define TRACK_LINE_LOST_CONFIRM_MS 15U
 #endif
 
-#ifndef TRACK_LINE_LOST_REVERSE_SPEED
-#define TRACK_LINE_LOST_REVERSE_SPEED 160.0f
+// 丢线后立即原地左转找线时，两侧车轮的目标转速绝对值。
+#ifndef TRACK_LINE_SEARCH_TURN_SPEED
+#define TRACK_LINE_SEARCH_TURN_SPEED 60.0f
 #endif
 
-// 回退过程中重新检测到线后，继续回退该时间再恢复巡线。
-#ifndef TRACK_LINE_REACQUIRED_REVERSE_MS
-#define TRACK_LINE_REACQUIRED_REVERSE_MS 5U
+// 搜索时必须连续检测到轨迹达到该时间，才恢复正常巡线。
+#ifndef TRACK_LINE_REACQUIRE_CONFIRM_MS
+#define TRACK_LINE_REACQUIRE_CONFIRM_MS 10U
 #endif
 
 // 从丢线时刻开始计时，超过该时间后自然停止。
@@ -91,8 +92,8 @@ void chassis_init(void);
 
 /**
  * @brief 设置左右轮速度命令。
- * @param left_speed 左轮命令，范围为 -1000.0 到 1000.0。
- * @param right_speed 右轮命令，范围为 -1000.0 到 1000.0。
+ * @param left_speed 左轮目标转速，单位 rpm。
+ * @param right_speed 右轮目标转速，单位 rpm。
  */
 void chassis_set_wheel_speed(float left_speed, float right_speed);
 
@@ -123,7 +124,7 @@ void chassis_stop(void);
 void chassis_brake(void);
 
 /**
- * @brief 应用最近一次底盘命令，由 Track_line_App 周期调用。
+ * @brief 把最近一次底盘命令更新到两路电机速度环。
  */
 void chassis_process(void);
 
