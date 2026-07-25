@@ -67,6 +67,14 @@ void Error_Handler(void);
 #define H2A_GPIO_Port GPIOD
 #define H2B_Pin GPIO_PIN_13
 #define H2B_GPIO_Port GPIOD
+#define GRAY_OUT_Pin GPIO_PIN_8
+#define GRAY_OUT_GPIO_Port GPIOD
+#define GRAY_AD0_Pin GPIO_PIN_9
+#define GRAY_AD0_GPIO_Port GPIOD
+#define GRAY_AD1_Pin GPIO_PIN_10
+#define GRAY_AD1_GPIO_Port GPIOD
+#define GRAY_AD2_Pin GPIO_PIN_11
+#define GRAY_AD2_GPIO_Port GPIOD
 #define BIN2_Pin GPIO_PIN_8
 #define BIN2_GPIO_Port GPIOA
 #define BIN1_Pin GPIO_PIN_9

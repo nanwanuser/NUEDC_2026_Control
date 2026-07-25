@@ -26,7 +26,7 @@
 
 ## 3. 接线说明
 
-以下是源模块建议的引脚配置，当前工程尚未在 CubeMX 中启用：
+当前工程使用以下引脚：
 
 | 模块引脚 | STM32 引脚 | GPIO 模式 | 说明 |
 | --- | --- | --- | --- |
@@ -68,7 +68,7 @@
 - 上下拉：先使用 `No pull-up and no pull-down`
 - 输出速度：`Low`
 
-当前工程尚未配置这四个引脚。使用前需要在 CubeMX 中启用 GPIOD 时钟并生成对应 GPIO 初始化代码。
+当前工程已在 CubeMX 中配置这四个引脚，并在 `Task/track_line/track_line.c` 中提供 `Gray_Sensor_Config` 强定义。
 
 ## 6. 驱动配置
 
@@ -86,7 +86,7 @@ gray_sensor_config Gray_Sensor_Config[gray_sensor_count] = {
      GPIOD, GPIO_PIN_10,
      GPIOD, GPIO_PIN_11,
      GPIOD, GPIO_PIN_8,
-     GRAY_SENSOR_ACTIVE_LOW},
+     GRAY_SENSOR_ACTIVE_HIGH},
 };
 ```
 
@@ -95,7 +95,7 @@ gray_sensor_config Gray_Sensor_Config[gray_sensor_count] = {
 - `GRAY_SENSOR_ACTIVE_LOW`：`OUT` 为低电平时，驱动返回 `1`
 - `GRAY_SENSOR_ACTIVE_HIGH`：`OUT` 为高电平时，驱动返回 `1`
 
-示例使用低电平有效。返回值 `1` 具体代表黑线还是白色背景，取决于传感器阈值、电位器调整和安装方式，应以实测结果为准。
+当前工程使用高电平有效。返回值 `1` 表示对应通道检测到线。
 
 ## 7. 使用方法
 

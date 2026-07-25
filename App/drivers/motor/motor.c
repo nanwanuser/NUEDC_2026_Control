@@ -296,8 +296,11 @@ void encoder_init(void) {
         __HAL_TIM_SET_COUNTER(Encoder_Config[i].htim, 0);
         Encoder_Config[i].total_count = 0;
         Encoder_Config[i].last_count = 0;
-        HAL_TIM_Encoder_Start(Encoder_Config[i].htim,
-                              TIM_CHANNEL_1 | TIM_CHANNEL_2);
+        if (HAL_TIM_Encoder_Start(Encoder_Config[i].htim,
+                                  TIM_CHANNEL_ALL) != HAL_OK) {
+            // 编码器未启动时禁止进入无反馈速度闭环。
+            Error_Handler();
+        }
     }
 
     s_last_report_tick = HAL_GetTick();
