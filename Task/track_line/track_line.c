@@ -25,6 +25,10 @@
 #error "CHASSIS_TASK_PERIOD_MS must be greater than zero"
 #endif
 
+#if TRACK_LINE_LOST_REVERSE_DELAY_MS >= TRACK_LINE_LOST_STOP_MS
+#error "TRACK_LINE_LOST_REVERSE_DELAY_MS must be smaller than TRACK_LINE_LOST_STOP_MS"
+#endif
+
 gray_sensor_config Gray_Sensor_Config[gray_sensor_count] = {
     {
         .ad0_port = GRAY_AD0_GPIO_Port,
@@ -157,6 +161,11 @@ static void track_line_handle_lost(void) {
 
     if (s_has_seen_line == 0U ||
         s_lost_time_ms >= TRACK_LINE_LOST_STOP_MS) {
+        chassis_stop();
+        return;
+    }
+
+    if (s_lost_time_ms <= TRACK_LINE_LOST_REVERSE_DELAY_MS) {
         chassis_stop();
         return;
     }

@@ -64,11 +64,16 @@
 #define TRACK_LINE_SHARP_ERROR_THRESHOLD 3.0f
 #endif
 
-// 丢线后直线后退搜索，超过该时间后自然停止。
+// 丢线后先自然停止等待，再直线后退搜索。
+#ifndef TRACK_LINE_LOST_REVERSE_DELAY_MS
+#define TRACK_LINE_LOST_REVERSE_DELAY_MS 50U
+#endif
+
 #ifndef TRACK_LINE_LOST_REVERSE_SPEED
 #define TRACK_LINE_LOST_REVERSE_SPEED 160.0f
 #endif
 
+// 从丢线时刻开始计时，超过该时间后自然停止。
 #ifndef TRACK_LINE_LOST_STOP_MS
 #define TRACK_LINE_LOST_STOP_MS 600U
 #endif
