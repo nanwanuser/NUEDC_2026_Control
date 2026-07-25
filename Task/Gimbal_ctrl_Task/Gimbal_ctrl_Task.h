@@ -25,7 +25,7 @@ extern "C" {
 #endif
 
 #ifndef GIMBAL_HOMING_TORQUE_MA
-#define GIMBAL_HOMING_TORQUE_MA 200U
+#define GIMBAL_HOMING_TORQUE_MA 400U
 #endif
 
 #ifndef GIMBAL_HOMING_TORQUE_DURATION_MS
@@ -34,6 +34,10 @@ extern "C" {
 
 #ifndef GIMBAL_HOMING_REVERSE_ANGLE_TENTHS
 #define GIMBAL_HOMING_REVERSE_ANGLE_TENTHS 1000
+#endif
+
+#ifndef GIMBAL_SCAN_START_DELAY_MS
+#define GIMBAL_SCAN_START_DELAY_MS 2000U
 #endif
 
 #ifndef GIMBAL_SCAN_YAW_STEP_TENTHS
@@ -50,10 +54,6 @@ extern "C" {
 
 #ifndef GIMBAL_VISION_CONVERGENCE_PIXELS
 #define GIMBAL_VISION_CONVERGENCE_PIXELS 50U
-#endif
-
-#ifndef GIMBAL_VISION_MAX_CORRECTIONS
-#define GIMBAL_VISION_MAX_CORRECTIONS 5U
 #endif
 
 #ifndef GIMBAL_VISION_WAIT_TIMEOUT_MS
@@ -76,21 +76,21 @@ typedef struct {
 
 /**
  * @brief Initialize the gimbal and establish the software zero position.
- * @note Yaw remains still. Pitch applies 200 mA forward torque for 2000 ms,
+ * @note Yaw remains still. Pitch applies 400 mA forward torque for 2000 ms,
  *       then moves 100 degrees in reverse and clears both hardware positions.
  */
 HAL_StatusTypeDef gimbal_ctrl_initialize(void);
 
 /**
- * @brief Run the serpentine scan from (-45, -45) to (45, 45).
- * @retval HAL_OK A non-lost vision target was received.
- * @retval HAL_TIMEOUT The complete scan ended without finding a target.
+ * @brief Scan from the current Pitch, then continue upward in 5-degree rows.
+ * @retval HAL_OK A fresh, non-lost vision target was received.
+ * @retval HAL_TIMEOUT Pitch reached 45 degrees without finding a target.
  */
 HAL_StatusTypeDef gimbal_ctrl_scan(void);
 
 /**
- * @brief Correct the gimbal from successive vision vectors.
- * @note Each received vector causes at most 1.0 degree motion per axis.
+ * @brief Consume one fresh vision vector and perform at most one correction.
+ * @note Each call moves either axis by no more than 1.0 degree.
  */
 HAL_StatusTypeDef gimbal_ctrl_correct(void);
 
@@ -125,6 +125,13 @@ HAL_StatusTypeDef gimbal_ctrl_pitch_absolute(int16_t angle_tenths,
 
 /** @brief Copy the current software angles and initialization state. */
 void gimbal_ctrl_get_state(gimbal_ctrl_state_t *state);
+
+/**
+ * @brief Latest continuous-tracking state shared between FreeRTOS tasks.
+ * @note HAL_OK means the latest vector was valid; HAL_ERROR means tracking is
+ *       unavailable and the gimbal is scanning or initialization failed.
+ */
+extern volatile HAL_StatusTypeDef gimbal_ctrl_status;
 
 /** @brief FreeRTOS gimbal task entry. */
 void Gimbal_ctrl_App(void *argument);

@@ -30,6 +30,7 @@ typedef struct {
 } gimbal_vector_motion_t;
 
 static gimbal_vision_state_t s_vision;
+static uint32_t s_corrected_sequence;
 static bool s_initialized;
 
 static int32_t gimbal_abs_i32(int32_t value)
@@ -77,7 +78,8 @@ static bool gimbal_target_visible(void)
     gimbal_vision_snapshot_t snapshot;
     (void)gimbal_vision_receive(GIMBAL_VISION_POLL_TIMEOUT_MS);
     gimbal_read_vision(&snapshot);
-    return snapshot.received && !snapshot.lost;
+    return snapshot.received && !snapshot.lost &&
+           snapshot.sequence != s_corrected_sequence;
 }
 
 static uint32_t gimbal_vector_error(const gimbal_vision_snapshot_t *vector)
@@ -173,12 +175,15 @@ static HAL_StatusTypeDef gimbal_wait_new_vector(
     uint32_t previous_sequence, gimbal_vision_snapshot_t *snapshot)
 {
     uint32_t start_tick = HAL_GetTick();
+    HAL_StatusTypeDef receive_status;
     while ((HAL_GetTick() - start_tick) < GIMBAL_VISION_WAIT_TIMEOUT_MS) {
-        (void)gimbal_vision_receive(GIMBAL_VISION_POLL_TIMEOUT_MS);
+        receive_status = gimbal_vision_receive(GIMBAL_VISION_POLL_TIMEOUT_MS);
+        if (receive_status == HAL_ERROR || receive_status == HAL_BUSY) {
+            return HAL_ERROR;
+        }
         gimbal_read_vision(snapshot);
-        if (snapshot->sequence != previous_sequence && snapshot->received &&
-            !snapshot->lost) {
-            return HAL_OK;
+        if (snapshot->sequence != previous_sequence && snapshot->received) {
+            return snapshot->lost ? HAL_ERROR : HAL_OK;
         }
         osDelay(1U);
     }
@@ -207,19 +212,6 @@ static HAL_StatusTypeDef gimbal_scan_yaw_row(int16_t target_yaw)
         }
     }
     return HAL_BUSY;
-}
-
-static HAL_StatusTypeDef gimbal_move_to_scan_start(void)
-{
-    HAL_StatusTypeDef status = gimbal_ctrl_pitch_absolute(
-        GIMBAL_ANGLE_MIN_TENTHS, GIMBAL_MOTION_SPEED_RPM,
-        GIMBAL_MOTION_ACCELERATION);
-    if (status != HAL_OK) {
-        return status;
-    }
-    return gimbal_ctrl_yaw_absolute(
-        GIMBAL_ANGLE_MIN_TENTHS, GIMBAL_MOTION_SPEED_RPM,
-        GIMBAL_MOTION_ACCELERATION);
 }
 
 HAL_StatusTypeDef gimbal_ctrl_yaw_relative(int16_t angle_tenths,
@@ -298,6 +290,7 @@ HAL_StatusTypeDef gimbal_ctrl_initialize(void)
 {
     HAL_StatusTypeDef status;
     s_initialized = false;
+    s_corrected_sequence = 0U;
     gimbal_reset_vision();
     gimbal_motion_reset();
     status = gimbal_motion_home_pitch();
@@ -311,23 +304,25 @@ HAL_StatusTypeDef gimbal_ctrl_initialize(void)
 HAL_StatusTypeDef gimbal_ctrl_scan(void)
 {
     int16_t pitch;
-    int16_t target_yaw = GIMBAL_ANGLE_MAX_TENTHS;
+    int16_t current_yaw;
+    int16_t target_yaw;
     HAL_StatusTypeDef row_status;
     if (!s_initialized) {
         return HAL_ERROR;
     }
-    row_status = gimbal_move_to_scan_start();
-    if (row_status != HAL_OK) {
-        return row_status;
-    }
     if (gimbal_target_visible()) {
         return HAL_OK;
     }
+    current_yaw = gimbal_motion_get_angle(GIMBAL_MOTION_AXIS_YAW);
+    target_yaw = current_yaw >= 0 ? GIMBAL_ANGLE_MAX_TENTHS
+                                  : GIMBAL_ANGLE_MIN_TENTHS;
+    row_status = gimbal_scan_yaw_row(target_yaw);
+    if (row_status != HAL_BUSY) {
+        return row_status;
+    }
+    target_yaw = -target_yaw;
     for (;;) {
         row_status = gimbal_scan_yaw_row(target_yaw);
-        if (row_status == HAL_OK) {
-            return HAL_OK;
-        }
         if (row_status != HAL_BUSY) {
             return row_status;
         }
@@ -342,53 +337,55 @@ HAL_StatusTypeDef gimbal_ctrl_scan(void)
         if (row_status != HAL_OK || gimbal_target_visible()) {
             return row_status;
         }
-        target_yaw = target_yaw == GIMBAL_ANGLE_MAX_TENTHS
-                         ? GIMBAL_ANGLE_MIN_TENTHS
-                         : GIMBAL_ANGLE_MAX_TENTHS;
+        target_yaw = -target_yaw;
     }
 }
 
 HAL_StatusTypeDef gimbal_ctrl_correct(void)
 {
     gimbal_vision_snapshot_t vector;
-    uint8_t correction_count = 0U;
     HAL_StatusTypeDef status;
     if (!s_initialized) {
         return HAL_ERROR;
     }
     gimbal_read_vision(&vector);
-    while (correction_count < GIMBAL_VISION_MAX_CORRECTIONS) {
-        if (!vector.received || vector.lost) {
-            status = gimbal_wait_new_vector(vector.sequence, &vector);
-            if (status != HAL_OK) {
-                return status;
-            }
-        }
-        if (gimbal_vector_error(&vector) < GIMBAL_VISION_CONVERGENCE_PIXELS) {
-            return HAL_OK;
-        }
-        status = gimbal_move_vector_step(&vector);
-        if (status != HAL_OK) {
-            return status;
-        }
-        correction_count++;
-        if (correction_count >= GIMBAL_VISION_MAX_CORRECTIONS) {
-            return HAL_OK;
-        }
+    if (vector.received && vector.lost) {
+        return HAL_ERROR;
+    }
+    if (!vector.received || vector.sequence == s_corrected_sequence) {
         status = gimbal_wait_new_vector(vector.sequence, &vector);
         if (status != HAL_OK) {
             return status;
         }
     }
-    return HAL_OK;
+    s_corrected_sequence = vector.sequence;
+    if (gimbal_vector_error(&vector) < GIMBAL_VISION_CONVERGENCE_PIXELS) {
+        return HAL_OK;
+    }
+    return gimbal_move_vector_step(&vector);
 }
 
 void Gimbal_ctrl_App(void *argument)
 {
+    HAL_StatusTypeDef status;
     (void)argument;
-    if (gimbal_ctrl_initialize() == HAL_OK &&
-        gimbal_ctrl_scan() == HAL_OK) {
-        (void)gimbal_ctrl_correct();
+    gimbal_ctrl_status = HAL_ERROR;
+    if (gimbal_ctrl_initialize() != HAL_OK) {
+        osThreadExit();
+        return;
     }
-    osThreadExit();
+    osDelay(GIMBAL_SCAN_START_DELAY_MS);
+    for (;;) {
+        status = gimbal_ctrl_scan();
+        if (status != HAL_OK) {
+            gimbal_ctrl_status = HAL_ERROR;
+            osDelay(1U);
+            continue;
+        }
+        gimbal_ctrl_status = HAL_OK;
+        while (gimbal_ctrl_correct() == HAL_OK) {
+            gimbal_ctrl_status = HAL_OK;
+        }
+        gimbal_ctrl_status = HAL_ERROR;
+    }
 }

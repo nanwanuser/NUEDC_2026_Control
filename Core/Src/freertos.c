@@ -45,6 +45,7 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
+volatile HAL_StatusTypeDef gimbal_ctrl_status = HAL_ERROR;
 
 /* USER CODE END Variables */
 /* Definitions for defaultTask */
