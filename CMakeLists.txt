@@ -53,6 +53,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     App/lib/simulink_pid/simulink_pid_ert_rtw/simulink_pid.c
     App/lib/simulink_pid/simulink_pid_ert_rtw/simulink_pid_data.c
     Task/motor_speed_control/motor_speed_control.c
+    Task/track_line/track_line.c
 )
 
 
@@ -67,6 +68,7 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/App/lib/simulink_pid
     ${CMAKE_CURRENT_SOURCE_DIR}/App/lib/simulink_pid/simulink_pid_ert_rtw
     ${CMAKE_CURRENT_SOURCE_DIR}/Task/motor_speed_control
+    ${CMAKE_CURRENT_SOURCE_DIR}/Task/track_line
 )
 
 # Add project symbols (macros)
