@@ -73,6 +73,11 @@
 #define TRACK_LINE_LOST_REVERSE_SPEED 160.0f
 #endif
 
+// 回退过程中重新检测到线后，继续回退该时间再恢复巡线。
+#ifndef TRACK_LINE_REACQUIRED_REVERSE_MS
+#define TRACK_LINE_REACQUIRED_REVERSE_MS 5U
+#endif
+
 // 从丢线时刻开始计时，超过该时间后自然停止。
 #ifndef TRACK_LINE_LOST_STOP_MS
 #define TRACK_LINE_LOST_STOP_MS 600U

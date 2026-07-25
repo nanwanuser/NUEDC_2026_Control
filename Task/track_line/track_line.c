@@ -62,6 +62,7 @@ static uint8_t s_line_detected;
 static uint8_t s_has_seen_line;
 static float s_line_error;
 static uint32_t s_lost_time_ms;
+static uint32_t s_reacquired_reverse_time_ms;
 
 static float chassis_abs(float value) {
     if (value < 0.0f) {
@@ -172,6 +173,26 @@ static void track_line_handle_lost(void) {
 
     chassis_set_wheel_speed(-TRACK_LINE_LOST_REVERSE_SPEED,
                             -TRACK_LINE_LOST_REVERSE_SPEED);
+}
+
+static uint8_t track_line_handle_reacquired(void) {
+    uint8_t was_reversing =
+        s_lost_time_ms > TRACK_LINE_LOST_REVERSE_DELAY_MS &&
+        s_lost_time_ms < TRACK_LINE_LOST_STOP_MS;
+
+    if (s_reacquired_reverse_time_ms == 0U && was_reversing == 0U) {
+        return 0U;
+    }
+
+    if (s_reacquired_reverse_time_ms >= TRACK_LINE_REACQUIRED_REVERSE_MS) {
+        s_reacquired_reverse_time_ms = 0U;
+        return 0U;
+    }
+
+    s_reacquired_reverse_time_ms += CHASSIS_TASK_PERIOD_MS;
+    chassis_set_wheel_speed(-TRACK_LINE_LOST_REVERSE_SPEED,
+                            -TRACK_LINE_LOST_REVERSE_SPEED);
+    return 1U;
 }
 
 static void chassis_save_command(chassis_mode mode,
@@ -287,6 +308,7 @@ void track_line_init(void) {
     s_has_seen_line = 0U;
     s_line_error = 0.0f;
     s_lost_time_ms = 0U;
+    s_reacquired_reverse_time_ms = 0U;
     s_track_line_enabled = track_line_sensor_is_valid();
 
     gray_sensor_init();
@@ -301,6 +323,7 @@ void track_line_process(void) {
     }
     if (!track_line_sensor_is_valid()) {
         s_line_detected = 0U;
+        s_reacquired_reverse_time_ms = 0U;
         chassis_stop();
         return;
     }
@@ -310,14 +333,19 @@ void track_line_process(void) {
     s_line_detected = track_line_calculate_error(s_sensor_data,
                                                   &current_error);
     if (s_line_detected == 0U) {
+        s_reacquired_reverse_time_ms = 0U;
         track_line_handle_lost();
         return;
     }
 
-    s_lost_time_ms = 0U;
     s_has_seen_line = 1U;
     s_line_error = current_error;
 
+    if (track_line_handle_reacquired() != 0U) {
+        return;
+    }
+
+    s_lost_time_ms = 0U;
     track_line_apply_steering(current_error);
 }
 
@@ -326,12 +354,14 @@ void track_line_enable(void) {
     s_has_seen_line = 0U;
     s_line_error = 0.0f;
     s_lost_time_ms = 0U;
+    s_reacquired_reverse_time_ms = 0U;
     s_track_line_enabled = track_line_sensor_is_valid();
 }
 
 void track_line_disable(void) {
     s_track_line_enabled = 0U;
     s_line_detected = 0U;
+    s_reacquired_reverse_time_ms = 0U;
     chassis_stop();
 }
 
