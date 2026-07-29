@@ -13,7 +13,8 @@ TRAJECTORY_AXIS_COUNT = 4
 TRAJECTORY_COEFFICIENT_COUNT = 6
 TRAJECTORY_TRANSFER_SEGMENT_COUNT = 2
 
-DECISION_MODE_FIXED_ID = 0
+DECISION_MODE_FIXED_TEMPLATE = 0
+DECISION_MODE_FIXED_ID = DECISION_MODE_FIXED_TEMPLATE
 DECISION_MODE_GENERAL = 1
 DECISION_RESULT_OK = 0
 
@@ -125,6 +126,11 @@ class DecisionConfig(ctypes.Structure):
         ("max_short_side_mm", ctypes.c_float),
         ("min_long_side_mm", ctypes.c_float),
         ("max_long_side_mm", ctypes.c_float),
+        ("contact_min_mm", ctypes.c_float),
+        ("line_tolerance_mm", ctypes.c_float),
+        ("angle_tolerance_deg", ctypes.c_float),
+        ("pose_dedup_position_mm", ctypes.c_float),
+        ("pose_dedup_angle_deg", ctypes.c_float),
         ("max_search_nodes", ctypes.c_uint32),
     ]
 
@@ -152,6 +158,11 @@ _library: ctypes.CDLL | None = None
 def _configure_library(library: ctypes.CDLL) -> None:
     library.Decision_GetDefaultConfig.argtypes = [ctypes.POINTER(DecisionConfig)]
     library.Decision_GetDefaultConfig.restype = None
+    library.DecisionTemplate_GetFigure2Layout.argtypes = [
+        DecisionPoint,
+        ctypes.POINTER(DecisionFixedLayout),
+    ]
+    library.DecisionTemplate_GetFigure2Layout.restype = None
     library.Decision_Solve.argtypes = [
         ctypes.c_int,
         ctypes.POINTER(DecisionVisionFrame),

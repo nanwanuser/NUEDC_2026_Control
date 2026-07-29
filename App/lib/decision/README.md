@@ -16,19 +16,37 @@ pieces[].vertices_mm      -> DecisionPiece.vertices
 
 ## 两种模式
 
-`DECISION_MODE_FIXED_ID`：按照 `id` 查找 `DecisionFixedLayout` 中的目标顶点，
-对当前顶点和目标顶点做刚体配准。目标顶点使用纸面毫米坐标，因此目标矩形的
-位置也由模板直接确定。
+`DECISION_MODE_FIXED_TEMPLATE`：枚举观测碎片与模板碎片的一一对应关系，通过顶点数和
+刚体配准误差选择全局最优匹配。实际匹配**不使用观测 `id`**。
+`pieces[].id` 仅表示本帧观测编号，并原样写入
+`DecisionMove.piece_id`。目标顶点使用 A4 纸面毫米坐标，因此目标矩形的位置由
+模板直接确定。
 
-`DECISION_MODE_GENERAL`：枚举长度接近的候选边，反向对齐后回溯拼接，并检查：
+旧名称 `DECISION_MODE_FIXED_ID` 作为兼容别名保留，新代码应使用
+`DECISION_MODE_FIXED_TEMPLATE`。
+
+`DECISION_MODE_GENERAL`：枚举候选边、端点和已放置边上的事件点，反向对齐后回溯
+拼接。事件点既包括边的原始端点，也包括其他已放置碎片落在长边上的顶点，因此
+支持“一条长边由多条短边连续覆盖”。求解过程检查：
 
 - 碎片不重叠；
 - 面积接近外接矩形面积；
 - 矩形边长符合题目范围；
 - 每片至少有一条边位于矩形外边界。
+- 每条内部边都被其他碎片的反向共线边完整覆盖，不能留下缝隙。
 
 求解成功后，模块把长边旋转到纸面 X 轴方向，并把矩形中心移动到
 `DecisionConfig.target_center`。
+
+题 1 和题 2 使用 Figure 2 的已知模板，可直接把四片碎片放到 A4 下半区的最终
+矩形位置，一次动作计划同时完成“移入下半区”和“拼成矩形”。调用
+`DecisionTemplate_GetFigure2Layout()` 可生成题面中的 `100 mm x 60 mm` 模板；
+默认中心 `(105, 220)` 对应范围 `x=55..155 mm, y=190..250 mm`，完全位于 A4
+下半区。题 3 使用通用模式，不依赖碎片模板或观测编号。
+
+通用搜索使用模块内静态工作区以避免占用任务栈，因此
+`Decision_SolveGeneral()` 不可并发或递归调用。每个候选锚片的搜索节点上限、接触
+长度、共线误差、角度误差和位姿去重精度均位于 `DecisionConfig`。
 
 ## 末端角度约定
 
@@ -67,8 +85,9 @@ request.execution.current_pose = robot_current_pose;
 DecisionTask_Submit(&request);
 ```
 
-固定模式还需要填写 `request.fixed_layout`。模板的顶点起点和绕行方向可以与
-视觉输出不同，模块会自动尝试循环移位和反向匹配。
+固定模式还需要填写 `request.fixed_layout`。模板的排列顺序、模板内部编号、顶点
+起点和绕行方向均可与视觉输出不同，模块会做全局一一匹配，并自动尝试顶点循环
+移位和反向匹配。
 
 ## 轨迹接入
 
@@ -84,6 +103,5 @@ current -> pick -> 等待吸附 -> transit -> place -> 等待释放 -> 下一片
 `DecisionTask_Output.execution_state` 查看；轨迹生成错误通过
 `DecisionTask_Output.trajectory_result` 查看。
 
-当前吸附和释放使用定时等待。接入负压或工具反馈后，可以在
-`DECISION_EXECUTION_GRIP_DWELL` 和 `DECISION_EXECUTION_RELEASE_DWELL` 状态替换
-为反馈确认。
+当前执行机构按电磁铁吸取纸片设计，吸附和释放使用定时等待，不依赖夹爪动作或
+夹爪反馈。本次算法模块没有新增电机、电磁铁或其他硬件驱动。

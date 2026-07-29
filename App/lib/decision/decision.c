@@ -9,6 +9,9 @@
 #define DECISION_GEOMETRY_EPSILON_MM   0.05f
 #define DECISION_MIN_POLYGON_AREA_MM2  1.0f
 #define DECISION_GRASP_GRID_DIVISIONS  12U
+#define DECISION_MAX_EDGE_EVENTS       (DECISION_MAX_PIECES * DECISION_MAX_VERTICES)
+#define DECISION_MAX_CONTACT_INTERVALS (DECISION_MAX_EDGE_EVENTS - 1U)
+#define DECISION_MAX_POSE_KEYS         96U
 
 typedef struct {
     float cosine;
@@ -16,6 +19,18 @@ typedef struct {
     float tx;
     float ty;
 } RigidTransform;
+
+typedef struct {
+    float begin;
+    float end;
+} EdgeInterval;
+
+typedef struct {
+    int32_t tx;
+    int32_t ty;
+    int32_t angle;
+    uint8_t piece_index;
+} PoseKey;
 
 typedef struct {
     DecisionPiece pieces[DECISION_MAX_PIECES];
@@ -32,7 +47,22 @@ typedef struct {
     float best_min_y;
     float best_max_y;
     RigidTransform best_transforms[DECISION_MAX_PIECES];
+    PoseKey pose_keys[DECISION_MAX_PIECES][DECISION_MAX_POSE_KEYS];
+    uint8_t pose_key_count[DECISION_MAX_PIECES];
 } GeneralSearch;
+
+typedef struct {
+    const DecisionPiece *pieces;
+    const DecisionFixedLayout *layout;
+    const DecisionConfig *config;
+    uint8_t piece_count;
+    RigidTransform transforms[DECISION_MAX_PIECES];
+    RigidTransform best_transforms[DECISION_MAX_PIECES];
+    float best_error;
+    uint8_t solution_found;
+} FixedMatchSearch;
+
+static GeneralSearch DecisionGeneral_Workspace;
 
 static float square(float value)
 {
@@ -124,9 +154,15 @@ static uint8_t config_is_valid(const DecisionConfig *config)
                      config->max_fill_error_ratio >= 0.0f &&
                      config->min_short_side_mm > 0.0f &&
                      config->max_short_side_mm >= config->min_short_side_mm &&
-                     config->min_long_side_mm >= config->min_short_side_mm &&
-                     config->max_long_side_mm >= config->min_long_side_mm &&
-                     config->max_search_nodes > 0U);
+                      config->min_long_side_mm >= config->min_short_side_mm &&
+                      config->max_long_side_mm >= config->min_long_side_mm &&
+                      config->contact_min_mm > 0.0f &&
+                      config->line_tolerance_mm >= 0.0f &&
+                      config->angle_tolerance_deg > 0.0f &&
+                      config->angle_tolerance_deg < 90.0f &&
+                      config->pose_dedup_position_mm > 0.0f &&
+                      config->pose_dedup_angle_deg > 0.0f &&
+                      config->max_search_nodes > 0U);
 }
 
 static uint8_t normalize_frame(const DecisionVisionFrame *frame,
@@ -413,18 +449,76 @@ static uint8_t find_best_fixed_transform(const DecisionPiece *piece,
     return (uint8_t)(*best_error < FLT_MAX);
 }
 
-static const DecisionFixedPiece *find_fixed_piece(
-    const DecisionFixedLayout *layout,
-    uint8_t id)
+static uint8_t fixed_layout_is_valid(const DecisionFixedLayout *layout)
 {
-    uint8_t index;
+    uint8_t piece_index;
 
-    for (index = 0U; index < layout->piece_count; ++index) {
-        if (layout->pieces[index].id == id) {
-            return &layout->pieces[index];
+    if (layout == NULL || layout->piece_count == 0U ||
+        layout->piece_count > DECISION_MAX_PIECES) {
+        return 0U;
+    }
+    for (piece_index = 0U; piece_index < layout->piece_count; ++piece_index) {
+        const DecisionFixedPiece *piece = &layout->pieces[piece_index];
+        uint8_t vertex_index;
+
+        if (piece->vertex_count < 3U ||
+            piece->vertex_count > DECISION_MAX_VERTICES) {
+            return 0U;
+        }
+        for (vertex_index = 0U; vertex_index < piece->vertex_count;
+             ++vertex_index) {
+            if (point_is_finite(piece->target_vertices[vertex_index]) == 0U) {
+                return 0U;
+            }
         }
     }
-    return NULL;
+    return 1U;
+}
+
+static void match_fixed_pieces(FixedMatchSearch *search,
+                               uint8_t piece_index,
+                               uint8_t used_target_mask,
+                               float accumulated_error)
+{
+    uint8_t target_index;
+
+    if (piece_index == search->piece_count) {
+        if (accumulated_error < search->best_error) {
+            search->best_error = accumulated_error;
+            (void)memcpy(search->best_transforms,
+                         search->transforms,
+                         sizeof(search->best_transforms));
+            search->solution_found = 1U;
+        }
+        return;
+    }
+
+    for (target_index = 0U; target_index < search->piece_count;
+         ++target_index) {
+        const DecisionFixedPiece *target = &search->layout->pieces[target_index];
+        RigidTransform transform;
+        float error;
+
+        if ((used_target_mask & (uint8_t)(1U << target_index)) != 0U ||
+            target->vertex_count != search->pieces[piece_index].vertex_count) {
+            continue;
+        }
+        if (find_best_fixed_transform(&search->pieces[piece_index],
+                                      target,
+                                      &transform,
+                                      &error) == 0U ||
+            error > search->config->edge_length_tolerance_mm ||
+            accumulated_error + error >= search->best_error) {
+            continue;
+        }
+
+        search->transforms[piece_index] = transform;
+        match_fixed_pieces(search,
+                           (uint8_t)(piece_index + 1U),
+                           (uint8_t)(used_target_mask |
+                                     (uint8_t)(1U << target_index)),
+                           accumulated_error + error);
+    }
 }
 
 static void fill_move(const DecisionPiece *piece,
@@ -581,58 +675,244 @@ static uint8_t polygons_overlap(const DecisionPiece *left_piece,
     return 0U;
 }
 
-static uint8_t align_piece_edges(const DecisionPiece *placed_piece,
-                                 const RigidTransform *placed_transform,
-                                 uint8_t placed_edge,
-                                 const DecisionPiece *new_piece,
-                                 uint8_t new_edge,
-                                 float length_tolerance_mm,
-                                 RigidTransform *new_transform,
-                                 float *length_error)
+static uint8_t edge_contact_interval(DecisionPoint a0,
+                                     DecisionPoint a1,
+                                     DecisionPoint b0,
+                                     DecisionPoint b1,
+                                     const DecisionConfig *config,
+                                     EdgeInterval *interval,
+                                     float *contact_error)
 {
-    uint8_t placed_next =
-        (uint8_t)((placed_edge + 1U) % placed_piece->vertex_count);
+    DecisionPoint a = point_subtract(a1, a0);
+    DecisionPoint b = point_subtract(b1, b0);
+    float a_length = point_length(a);
+    float b_length = point_length(b);
+    float direction_dot;
+    float distance0;
+    float distance1;
+    float projection0;
+    float projection1;
+    float begin;
+    float end;
+    float cosine_limit;
+
+    if (a_length <= DECISION_GEOMETRY_EPSILON_MM ||
+        b_length <= DECISION_GEOMETRY_EPSILON_MM) {
+        return 0U;
+    }
+
+    direction_dot = (a.x_mm * b.x_mm + a.y_mm * b.y_mm) /
+                    (a_length * b_length);
+    cosine_limit = cosf(config->angle_tolerance_deg *
+                        DECISION_PI / 180.0f);
+    if (direction_dot > -cosine_limit) {
+        return 0U;
+    }
+
+    distance0 = fabsf(point_cross(a, point_subtract(b0, a0))) / a_length;
+    distance1 = fabsf(point_cross(a, point_subtract(b1, a0))) / a_length;
+    if (distance0 > config->line_tolerance_mm ||
+        distance1 > config->line_tolerance_mm) {
+        return 0U;
+    }
+
+    projection0 = (point_subtract(b0, a0).x_mm * a.x_mm +
+                   point_subtract(b0, a0).y_mm * a.y_mm) / a_length;
+    projection1 = (point_subtract(b1, a0).x_mm * a.x_mm +
+                   point_subtract(b1, a0).y_mm * a.y_mm) / a_length;
+    begin = fmaxf(0.0f, fminf(projection0, projection1));
+    end = fminf(a_length, fmaxf(projection0, projection1));
+    if (end - begin <= DECISION_GEOMETRY_EPSILON_MM) {
+        return 0U;
+    }
+
+    if (interval != NULL) {
+        interval->begin = begin;
+        interval->end = end;
+    }
+    if (contact_error != NULL) {
+        *contact_error = 0.5f * (distance0 + distance1) +
+                         (1.0f + direction_dot) * a_length;
+    }
+    return 1U;
+}
+
+static uint8_t align_edge_endpoint(DecisionPoint placed_start,
+                                   DecisionPoint placed_end,
+                                   DecisionPoint event,
+                                   const DecisionPiece *new_piece,
+                                   uint8_t new_edge,
+                                   uint8_t new_endpoint,
+                                   RigidTransform *new_transform)
+{
     uint8_t new_next =
         (uint8_t)((new_edge + 1U) % new_piece->vertex_count);
-    DecisionPoint placed_start = transform_point(
-        placed_transform, placed_piece->vertices[placed_edge]);
-    DecisionPoint placed_end = transform_point(
-        placed_transform, placed_piece->vertices[placed_next]);
-    DecisionPoint new_start = new_piece->vertices[new_edge];
-    DecisionPoint new_end = new_piece->vertices[new_next];
-    DecisionPoint source_vector = point_subtract(new_end, new_start);
-    DecisionPoint target_vector = point_subtract(placed_start, placed_end);
-    DecisionPoint source_midpoint;
-    DecisionPoint target_midpoint;
-    float source_length = point_length(source_vector);
-    float target_length = point_length(target_vector);
+    DecisionPoint source_start = new_piece->vertices[new_edge];
+    DecisionPoint source_end = new_piece->vertices[new_next];
+    DecisionPoint source = point_subtract(source_end, source_start);
+    DecisionPoint target = point_subtract(placed_start, placed_end);
+    DecisionPoint anchor = new_endpoint == 0U ? source_start : source_end;
+    float source_length = point_length(source);
+    float target_length = point_length(target);
     float denominator;
 
-    *length_error = fabsf(source_length - target_length);
     if (source_length <= DECISION_GEOMETRY_EPSILON_MM ||
-        target_length <= DECISION_GEOMETRY_EPSILON_MM ||
-        *length_error > length_tolerance_mm) {
+        target_length <= DECISION_GEOMETRY_EPSILON_MM) {
         return 0U;
     }
 
     denominator = source_length * target_length;
     new_transform->cosine =
-        (source_vector.x_mm * target_vector.x_mm +
-         source_vector.y_mm * target_vector.y_mm) / denominator;
-    new_transform->sine = point_cross(source_vector, target_vector) /
-                          denominator;
-
-    source_midpoint.x_mm = 0.5f * (new_start.x_mm + new_end.x_mm);
-    source_midpoint.y_mm = 0.5f * (new_start.y_mm + new_end.y_mm);
-    target_midpoint.x_mm = 0.5f * (placed_start.x_mm + placed_end.x_mm);
-    target_midpoint.y_mm = 0.5f * (placed_start.y_mm + placed_end.y_mm);
-    new_transform->tx = target_midpoint.x_mm -
-        (new_transform->cosine * source_midpoint.x_mm -
-         new_transform->sine * source_midpoint.y_mm);
-    new_transform->ty = target_midpoint.y_mm -
-        (new_transform->sine * source_midpoint.x_mm +
-         new_transform->cosine * source_midpoint.y_mm);
+        (source.x_mm * target.x_mm + source.y_mm * target.y_mm) /
+        denominator;
+    new_transform->sine = point_cross(source, target) / denominator;
+    new_transform->tx = event.x_mm -
+        (new_transform->cosine * anchor.x_mm -
+         new_transform->sine * anchor.y_mm);
+    new_transform->ty = event.y_mm -
+        (new_transform->sine * anchor.x_mm +
+         new_transform->cosine * anchor.y_mm);
     return 1U;
+}
+
+static uint8_t collect_edge_events(const GeneralSearch *search,
+                                   uint8_t placed_mask,
+                                   const RigidTransform *transforms,
+                                   DecisionPoint edge_start,
+                                   DecisionPoint edge_end,
+                                   DecisionPoint events[DECISION_MAX_EDGE_EVENTS])
+{
+    uint8_t count = 0U;
+    uint8_t piece_index;
+
+    for (piece_index = 0U; piece_index < search->piece_count; ++piece_index) {
+        const DecisionPiece *piece;
+        uint8_t vertex_index;
+
+        if ((placed_mask & (uint8_t)(1U << piece_index)) == 0U) {
+            continue;
+        }
+        piece = &search->pieces[piece_index];
+
+        for (vertex_index = 0U; vertex_index < piece->vertex_count;
+             ++vertex_index) {
+            DecisionPoint event = transform_point(&transforms[piece_index],
+                                                   piece->vertices[vertex_index]);
+            uint8_t duplicate = 0U;
+            uint8_t previous;
+
+            if (distance_to_segment(event, edge_start, edge_end) >
+                search->config->line_tolerance_mm) {
+                continue;
+            }
+            for (previous = 0U; previous < count; ++previous) {
+                if (point_length(point_subtract(event, events[previous])) <=
+                    search->config->pose_dedup_position_mm) {
+                    duplicate = 1U;
+                    break;
+                }
+            }
+            if (duplicate == 0U && count < DECISION_MAX_EDGE_EVENTS) {
+                events[count] = event;
+                ++count;
+            }
+        }
+    }
+    return count;
+}
+
+static uint8_t candidate_has_contact(const GeneralSearch *search,
+                                     uint8_t placed_mask,
+                                     const RigidTransform *transforms,
+                                     const DecisionPiece *new_piece,
+                                     const RigidTransform *new_transform,
+                                     float *attachment_error)
+{
+    uint8_t placed_index;
+    uint8_t contact_found = 0U;
+    float best_error = FLT_MAX;
+
+    for (placed_index = 0U; placed_index < search->piece_count;
+         ++placed_index) {
+        const DecisionPiece *placed_piece;
+        uint8_t placed_edge;
+
+        if ((placed_mask & (uint8_t)(1U << placed_index)) == 0U) {
+            continue;
+        }
+        placed_piece = &search->pieces[placed_index];
+        for (placed_edge = 0U; placed_edge < placed_piece->vertex_count;
+             ++placed_edge) {
+            uint8_t placed_next =
+                (uint8_t)((placed_edge + 1U) % placed_piece->vertex_count);
+            DecisionPoint a0 = transform_point(&transforms[placed_index],
+                                               placed_piece->vertices[placed_edge]);
+            DecisionPoint a1 = transform_point(&transforms[placed_index],
+                                               placed_piece->vertices[placed_next]);
+            uint8_t new_edge;
+
+            for (new_edge = 0U; new_edge < new_piece->vertex_count; ++new_edge) {
+                uint8_t new_next =
+                    (uint8_t)((new_edge + 1U) % new_piece->vertex_count);
+                DecisionPoint b0 = transform_point(new_transform,
+                                                   new_piece->vertices[new_edge]);
+                DecisionPoint b1 = transform_point(new_transform,
+                                                   new_piece->vertices[new_next]);
+                EdgeInterval interval;
+                float error;
+
+                if (edge_contact_interval(a0, a1, b0, b1,
+                                          search->config,
+                                          &interval, &error) != 0U &&
+                    interval.end - interval.begin >=
+                        search->config->contact_min_mm) {
+                    contact_found = 1U;
+                    if (error < best_error) {
+                        best_error = error;
+                    }
+                }
+            }
+        }
+    }
+
+    if (contact_found != 0U) {
+        *attachment_error = best_error;
+    }
+    return contact_found;
+}
+
+static uint8_t pose_was_seen(GeneralSearch *search,
+                             uint8_t depth,
+                             uint8_t piece_index,
+                             const RigidTransform *transform)
+{
+    PoseKey key;
+    uint8_t index;
+    uint8_t count = search->pose_key_count[depth];
+
+    key.tx = (int32_t)lroundf(transform->tx /
+                             search->config->pose_dedup_position_mm);
+    key.ty = (int32_t)lroundf(transform->ty /
+                             search->config->pose_dedup_position_mm);
+    key.angle = (int32_t)lroundf(
+        (atan2f(transform->sine, transform->cosine) * 180.0f /
+         DECISION_PI) / search->config->pose_dedup_angle_deg);
+    key.piece_index = piece_index;
+
+    for (index = 0U; index < count; ++index) {
+        const PoseKey *previous = &search->pose_keys[depth][index];
+
+        if (previous->piece_index == key.piece_index &&
+            previous->tx == key.tx && previous->ty == key.ty &&
+            previous->angle == key.angle) {
+            return 1U;
+        }
+    }
+    if (count < DECISION_MAX_POSE_KEYS) {
+        search->pose_keys[depth][count] = key;
+        search->pose_key_count[depth] = (uint8_t)(count + 1U);
+    }
+    return 0U;
 }
 
 static void project_layout(const GeneralSearch *search,
@@ -720,6 +1000,228 @@ static uint8_t each_piece_has_outer_edge(const GeneralSearch *search,
     return 1U;
 }
 
+static uint8_t edge_is_on_rectangle(DecisionPoint p0,
+                                    DecisionPoint p1,
+                                    float angle_rad,
+                                    float min_x,
+                                    float max_x,
+                                    float min_y,
+                                    float max_y,
+                                    float tolerance)
+{
+    float cosine = cosf(angle_rad);
+    float sine = sinf(angle_rad);
+    float x0 = cosine * p0.x_mm + sine * p0.y_mm;
+    float y0 = -sine * p0.x_mm + cosine * p0.y_mm;
+    float x1 = cosine * p1.x_mm + sine * p1.y_mm;
+    float y1 = -sine * p1.x_mm + cosine * p1.y_mm;
+
+    return (uint8_t)((fabsf(x0 - min_x) <= tolerance &&
+                      fabsf(x1 - min_x) <= tolerance) ||
+                     (fabsf(x0 - max_x) <= tolerance &&
+                      fabsf(x1 - max_x) <= tolerance) ||
+                     (fabsf(y0 - min_y) <= tolerance &&
+                      fabsf(y1 - min_y) <= tolerance) ||
+                     (fabsf(y0 - max_y) <= tolerance &&
+                      fabsf(y1 - max_y) <= tolerance));
+}
+
+static void sort_intervals(EdgeInterval *intervals, uint8_t count)
+{
+    uint8_t index;
+
+    for (index = 1U; index < count; ++index) {
+        EdgeInterval value = intervals[index];
+        uint8_t insertion = index;
+
+        while (insertion > 0U &&
+               intervals[insertion - 1U].begin > value.begin) {
+            intervals[insertion] = intervals[insertion - 1U];
+            --insertion;
+        }
+        intervals[insertion] = value;
+    }
+}
+
+static void project_partial_layout(const GeneralSearch *search,
+                                   uint8_t placed_mask,
+                                   const RigidTransform *transforms,
+                                   float angle_rad,
+                                   float *minimum_x,
+                                   float *maximum_x,
+                                   float *minimum_y,
+                                   float *maximum_y)
+{
+    float cosine = cosf(angle_rad);
+    float sine = sinf(angle_rad);
+    uint8_t piece_index;
+
+    *minimum_x = FLT_MAX;
+    *maximum_x = -FLT_MAX;
+    *minimum_y = FLT_MAX;
+    *maximum_y = -FLT_MAX;
+
+    for (piece_index = 0U; piece_index < search->piece_count; ++piece_index) {
+        const DecisionPiece *piece;
+        uint8_t vertex_index;
+
+        if ((placed_mask & (uint8_t)(1U << piece_index)) == 0U) {
+            continue;
+        }
+        piece = &search->pieces[piece_index];
+        for (vertex_index = 0U; vertex_index < piece->vertex_count;
+             ++vertex_index) {
+            DecisionPoint point = transform_point(&transforms[piece_index],
+                                                  piece->vertices[vertex_index]);
+            float projected_x = cosine * point.x_mm + sine * point.y_mm;
+            float projected_y = -sine * point.x_mm + cosine * point.y_mm;
+
+            if (projected_x < *minimum_x) *minimum_x = projected_x;
+            if (projected_x > *maximum_x) *maximum_x = projected_x;
+            if (projected_y < *minimum_y) *minimum_y = projected_y;
+            if (projected_y > *maximum_y) *maximum_y = projected_y;
+        }
+    }
+}
+
+static uint8_t partial_layout_can_fit_rectangle(
+    const GeneralSearch *search,
+    uint8_t placed_mask,
+    const RigidTransform *transforms)
+{
+    uint8_t piece_index;
+
+    for (piece_index = 0U; piece_index < search->piece_count; ++piece_index) {
+        const DecisionPiece *piece;
+        uint8_t edge_index;
+
+        if ((placed_mask & (uint8_t)(1U << piece_index)) == 0U) {
+            continue;
+        }
+        piece = &search->pieces[piece_index];
+        for (edge_index = 0U; edge_index < piece->vertex_count; ++edge_index) {
+            uint8_t next = (uint8_t)((edge_index + 1U) % piece->vertex_count);
+            DecisionPoint start = transform_point(&transforms[piece_index],
+                                                  piece->vertices[edge_index]);
+            DecisionPoint end = transform_point(&transforms[piece_index],
+                                                piece->vertices[next]);
+            DecisionPoint edge = point_subtract(end, start);
+            float min_x;
+            float max_x;
+            float min_y;
+            float max_y;
+            float width;
+            float height;
+            float long_side;
+            float short_side;
+
+            project_partial_layout(search, placed_mask, transforms,
+                                   atan2f(edge.y_mm, edge.x_mm),
+                                   &min_x, &max_x, &min_y, &max_y);
+            width = max_x - min_x;
+            height = max_y - min_y;
+            long_side = fmaxf(width, height);
+            short_side = fminf(width, height);
+            if (long_side <= search->config->max_long_side_mm +
+                             search->config->boundary_tolerance_mm &&
+                short_side <= search->config->max_short_side_mm +
+                              search->config->boundary_tolerance_mm) {
+                return 1U;
+            }
+        }
+    }
+    return 0U;
+}
+
+static uint8_t internal_edges_are_covered(const GeneralSearch *search,
+                                          const RigidTransform *transforms,
+                                          float angle_rad,
+                                          float min_x,
+                                          float max_x,
+                                          float min_y,
+                                          float max_y)
+{
+    uint8_t piece_index;
+
+    for (piece_index = 0U; piece_index < search->piece_count; ++piece_index) {
+        const DecisionPiece *piece = &search->pieces[piece_index];
+        uint8_t edge_index;
+
+        for (edge_index = 0U; edge_index < piece->vertex_count; ++edge_index) {
+            uint8_t next = (uint8_t)((edge_index + 1U) % piece->vertex_count);
+            DecisionPoint a0 = transform_point(&transforms[piece_index],
+                                               piece->vertices[edge_index]);
+            DecisionPoint a1 = transform_point(&transforms[piece_index],
+                                               piece->vertices[next]);
+            float edge_length = point_length(point_subtract(a1, a0));
+            EdgeInterval intervals[DECISION_MAX_CONTACT_INTERVALS];
+            uint8_t interval_count = 0U;
+            uint8_t other_index;
+            float covered_end;
+            uint8_t interval_index;
+
+            if (edge_is_on_rectangle(a0, a1, angle_rad,
+                                     min_x, max_x, min_y, max_y,
+                                     search->config->boundary_tolerance_mm) != 0U) {
+                continue;
+            }
+
+            for (other_index = 0U; other_index < search->piece_count;
+                 ++other_index) {
+                const DecisionPiece *other;
+                uint8_t other_edge;
+
+                if (other_index == piece_index) {
+                    continue;
+                }
+                other = &search->pieces[other_index];
+                for (other_edge = 0U; other_edge < other->vertex_count;
+                     ++other_edge) {
+                    uint8_t other_next =
+                        (uint8_t)((other_edge + 1U) % other->vertex_count);
+                    DecisionPoint b0 = transform_point(
+                        &transforms[other_index], other->vertices[other_edge]);
+                    DecisionPoint b1 = transform_point(
+                        &transforms[other_index], other->vertices[other_next]);
+                    EdgeInterval interval;
+
+                    if (edge_contact_interval(a0, a1, b0, b1,
+                                              search->config,
+                                              &interval, NULL) != 0U &&
+                        interval_count < DECISION_MAX_CONTACT_INTERVALS) {
+                        intervals[interval_count] = interval;
+                        ++interval_count;
+                    }
+                }
+            }
+
+            if (interval_count == 0U) {
+                return 0U;
+            }
+            sort_intervals(intervals, interval_count);
+            if (intervals[0].begin > search->config->boundary_tolerance_mm) {
+                return 0U;
+            }
+            covered_end = intervals[0].end;
+            for (interval_index = 1U; interval_index < interval_count;
+                 ++interval_index) {
+                if (intervals[interval_index].begin - covered_end >
+                    search->config->boundary_tolerance_mm) {
+                    return 0U;
+                }
+                if (intervals[interval_index].end > covered_end) {
+                    covered_end = intervals[interval_index].end;
+                }
+            }
+            if (edge_length - covered_end >
+                search->config->boundary_tolerance_mm) {
+                return 0U;
+            }
+        }
+    }
+    return 1U;
+}
+
 static void evaluate_complete_layout(GeneralSearch *search,
                                      const RigidTransform *transforms,
                                      float attachment_error)
@@ -790,6 +1292,15 @@ static void evaluate_complete_layout(GeneralSearch *search,
                                           max_y) == 0U) {
                 continue;
             }
+            if (internal_edges_are_covered(search,
+                                           transforms,
+                                           angle,
+                                           min_x,
+                                           max_x,
+                                           min_y,
+                                           max_y) == 0U) {
+                continue;
+            }
 
             score = fill_error_ratio +
                     attachment_error /
@@ -813,10 +1324,19 @@ static void evaluate_complete_layout(GeneralSearch *search,
 static void search_layout(GeneralSearch *search,
                           uint8_t placed_mask,
                           RigidTransform transforms[DECISION_MAX_PIECES],
-                          uint8_t used_edges[DECISION_MAX_PIECES],
                           float attachment_error)
 {
+    uint8_t depth = 0U;
     uint8_t placed_index;
+
+    {
+        uint8_t mask = placed_mask;
+        while (mask != 0U) {
+            depth = (uint8_t)(depth + (mask & 1U));
+            mask >>= 1U;
+        }
+    }
+    search->pose_key_count[depth - 1U] = 0U;
 
     ++search->nodes;
     if (search->nodes > search->config->max_search_nodes) {
@@ -843,12 +1363,20 @@ static void search_layout(GeneralSearch *search,
         for (placed_edge = 0U;
              placed_edge < placed_piece->vertex_count;
              ++placed_edge) {
+            uint8_t placed_next =
+                (uint8_t)((placed_edge + 1U) % placed_piece->vertex_count);
+            DecisionPoint placed_start = transform_point(
+                &transforms[placed_index], placed_piece->vertices[placed_edge]);
+            DecisionPoint placed_end = transform_point(
+                &transforms[placed_index], placed_piece->vertices[placed_next]);
+            DecisionPoint events[DECISION_MAX_EDGE_EVENTS];
+            uint8_t event_count = collect_edge_events(search,
+                                                       placed_mask,
+                                                       transforms,
+                                                       placed_start,
+                                                       placed_end,
+                                                       events);
             uint8_t new_index;
-
-            if ((used_edges[placed_index] &
-                 (uint8_t)(1U << placed_edge)) != 0U) {
-                continue;
-            }
 
             for (new_index = 0U;
                  new_index < search->piece_count;
@@ -864,57 +1392,75 @@ static void search_layout(GeneralSearch *search,
                 for (new_edge = 0U;
                      new_edge < new_piece->vertex_count;
                      ++new_edge) {
-                    RigidTransform candidate_transform;
-                    float length_error;
-                    uint8_t overlap = 0U;
-                    uint8_t compare_index;
-                    uint8_t previous_placed_edges;
+                    uint8_t new_endpoint;
 
-                    if (align_piece_edges(placed_piece,
-                                          &transforms[placed_index],
-                                          placed_edge,
-                                          new_piece,
-                                          new_edge,
-                                          search->config->edge_length_tolerance_mm,
-                                          &candidate_transform,
-                                          &length_error) == 0U) {
-                        continue;
-                    }
+                    for (new_endpoint = 0U; new_endpoint < 2U;
+                         ++new_endpoint) {
+                        uint8_t event_index;
 
-                    for (compare_index = 0U;
-                         compare_index < search->piece_count;
-                         ++compare_index) {
-                        if ((placed_mask &
-                             (uint8_t)(1U << compare_index)) != 0U &&
-                            polygons_overlap(&search->pieces[compare_index],
-                                             &transforms[compare_index],
-                                             new_piece,
-                                             &candidate_transform) != 0U) {
-                            overlap = 1U;
-                            break;
+                        for (event_index = 0U; event_index < event_count;
+                             ++event_index) {
+                            RigidTransform candidate_transform;
+                            float contact_error;
+                            uint8_t overlap = 0U;
+                            uint8_t compare_index;
+
+                            if (align_edge_endpoint(placed_start,
+                                                    placed_end,
+                                                    events[event_index],
+                                                    new_piece,
+                                                    new_edge,
+                                                    new_endpoint,
+                                                    &candidate_transform) == 0U ||
+                                pose_was_seen(search,
+                                              (uint8_t)(depth - 1U),
+                                              new_index,
+                                              &candidate_transform) != 0U) {
+                                continue;
+                            }
+
+                            for (compare_index = 0U;
+                                 compare_index < search->piece_count;
+                                 ++compare_index) {
+                                if ((placed_mask &
+                                     (uint8_t)(1U << compare_index)) != 0U &&
+                                    polygons_overlap(
+                                        &search->pieces[compare_index],
+                                        &transforms[compare_index],
+                                        new_piece,
+                                        &candidate_transform) != 0U) {
+                                    overlap = 1U;
+                                    break;
+                                }
+                            }
+                            if (overlap != 0U ||
+                                candidate_has_contact(search,
+                                                      placed_mask,
+                                                      transforms,
+                                                      new_piece,
+                                                      &candidate_transform,
+                                                      &contact_error) == 0U) {
+                                continue;
+                            }
+
+                            transforms[new_index] = candidate_transform;
+                            if (partial_layout_can_fit_rectangle(
+                                    search,
+                                    (uint8_t)(placed_mask |
+                                        (uint8_t)(1U << new_index)),
+                                    transforms) == 0U) {
+                                continue;
+                            }
+                            search_layout(search,
+                                          (uint8_t)(placed_mask |
+                                              (uint8_t)(1U << new_index)),
+                                          transforms,
+                                          attachment_error + contact_error);
+                            if (search->solution_found != 0U ||
+                                search->limit_reached != 0U) {
+                                return;
+                            }
                         }
-                    }
-                    if (overlap != 0U) {
-                        continue;
-                    }
-
-                    transforms[new_index] = candidate_transform;
-                    previous_placed_edges = used_edges[placed_index];
-                    used_edges[placed_index] |=
-                        (uint8_t)(1U << placed_edge);
-                    used_edges[new_index] = (uint8_t)(1U << new_edge);
-
-                    search_layout(search,
-                                  (uint8_t)(placed_mask |
-                                            (uint8_t)(1U << new_index)),
-                                  transforms,
-                                  used_edges,
-                                  attachment_error + length_error);
-
-                    used_edges[placed_index] = previous_placed_edges;
-                    used_edges[new_index] = 0U;
-                    if (search->limit_reached != 0U) {
-                        return;
                     }
                 }
             }
@@ -940,6 +1486,11 @@ void Decision_GetDefaultConfig(DecisionConfig *config)
     config->max_short_side_mm = 90.0f;
     config->min_long_side_mm = 90.0f;
     config->max_long_side_mm = 120.0f;
+    config->contact_min_mm = 5.0f;
+    config->line_tolerance_mm = 2.0f;
+    config->angle_tolerance_deg = 3.0f;
+    config->pose_dedup_position_mm = 0.1f;
+    config->pose_dedup_angle_deg = 0.1f;
     config->max_search_nodes = DECISION_DEFAULT_MAX_NODES;
 }
 
@@ -949,55 +1500,43 @@ DecisionResult Decision_SolveFixed(const DecisionVisionFrame *frame,
                                    DecisionPlan *plan)
 {
     DecisionPiece pieces[DECISION_MAX_PIECES];
+    FixedMatchSearch search;
     uint8_t piece_index;
 
     if (frame == NULL || layout == NULL || plan == NULL ||
         config_is_valid(config) == 0U ||
-        layout->piece_count == 0U ||
-        layout->piece_count > DECISION_MAX_PIECES) {
+        fixed_layout_is_valid(layout) == 0U) {
         return DECISION_RESULT_INVALID_ARGUMENT;
     }
     if (normalize_frame(frame, pieces) == 0U) {
         return DECISION_RESULT_INVALID_FRAME;
     }
+    if (frame->piece_count != layout->piece_count) {
+        return DECISION_RESULT_TEMPLATE_MISMATCH;
+    }
+
+    (void)memset(&search, 0, sizeof(search));
+    search.pieces = pieces;
+    search.layout = layout;
+    search.config = config;
+    search.piece_count = frame->piece_count;
+    search.best_error = FLT_MAX;
+    match_fixed_pieces(&search, 0U, 0U, 0.0f);
+    if (search.solution_found == 0U) {
+        return DECISION_RESULT_TEMPLATE_MISMATCH;
+    }
 
     (void)memset(plan, 0, sizeof(*plan));
     plan->seq = frame->seq;
     for (piece_index = 0U; piece_index < frame->piece_count; ++piece_index) {
-        const DecisionFixedPiece *target =
-            find_fixed_piece(layout, pieces[piece_index].id);
-        RigidTransform transform;
         DecisionPoint grasp;
         DecisionPoint place;
-        float error;
         float rotation_deg;
-        uint8_t target_vertex_index;
-
-        if (target == NULL) {
-            return DECISION_RESULT_TEMPLATE_NOT_FOUND;
-        }
-        if (target->vertex_count != pieces[piece_index].vertex_count) {
-            return DECISION_RESULT_TEMPLATE_MISMATCH;
-        }
-        for (target_vertex_index = 0U;
-             target_vertex_index < target->vertex_count;
-             ++target_vertex_index) {
-            if (!point_is_finite(target->target_vertices[target_vertex_index])) {
-                return DECISION_RESULT_TEMPLATE_MISMATCH;
-            }
-        }
-
-        if (find_best_fixed_transform(&pieces[piece_index],
-                                      target,
-                                      &transform,
-                                      &error) == 0U ||
-            error > config->edge_length_tolerance_mm) {
-            return DECISION_RESULT_TEMPLATE_MISMATCH;
-        }
 
         grasp = find_grasp_point(&pieces[piece_index]);
-        place = transform_point(&transform, grasp);
-        rotation_deg = atan2f(transform.sine, transform.cosine) *
+        place = transform_point(&search.best_transforms[piece_index], grasp);
+        rotation_deg = atan2f(search.best_transforms[piece_index].sine,
+                              search.best_transforms[piece_index].cosine) *
                        180.0f / DECISION_PI;
         fill_move(&pieces[piece_index],
                   grasp,
@@ -1014,58 +1553,102 @@ DecisionResult Decision_SolveGeneral(const DecisionVisionFrame *frame,
                                      const DecisionConfig *config,
                                      DecisionPlan *plan)
 {
-    GeneralSearch search;
+    GeneralSearch *search = &DecisionGeneral_Workspace;
     RigidTransform transforms[DECISION_MAX_PIECES];
-    uint8_t used_edges[DECISION_MAX_PIECES] = {0U};
     float rectangle_center_x;
     float rectangle_center_y;
     float rectangle_cosine;
     float rectangle_sine;
+    uint8_t any_limit_reached = 0U;
+    uint8_t anchor_order[DECISION_MAX_PIECES];
+    uint8_t anchor_index;
     uint8_t piece_index;
 
     if (frame == NULL || plan == NULL || config_is_valid(config) == 0U) {
         return DECISION_RESULT_INVALID_ARGUMENT;
     }
 
-    (void)memset(&search, 0, sizeof(search));
-    if (normalize_frame(frame, search.pieces) == 0U) {
+    (void)memset(search, 0, sizeof(*search));
+    if (normalize_frame(frame, search->pieces) == 0U) {
         return DECISION_RESULT_INVALID_FRAME;
     }
-    search.config = config;
-    search.piece_count = frame->piece_count;
-    search.best_score = FLT_MAX;
+    search->config = config;
+    search->piece_count = frame->piece_count;
+    search->best_score = FLT_MAX;
 
-    for (piece_index = 0U; piece_index < search.piece_count; ++piece_index) {
-        search.total_area += polygon_signed_area(
-            search.pieces[piece_index].vertices,
-            search.pieces[piece_index].vertex_count);
+    for (piece_index = 0U; piece_index < search->piece_count; ++piece_index) {
+        search->total_area += polygon_signed_area(
+            search->pieces[piece_index].vertices,
+            search->pieces[piece_index].vertex_count);
         transforms[piece_index].cosine = 1.0f;
         transforms[piece_index].sine = 0.0f;
         transforms[piece_index].tx = 0.0f;
         transforms[piece_index].ty = 0.0f;
+        anchor_order[piece_index] = piece_index;
     }
 
-    search_layout(&search, 1U, transforms, used_edges, 0.0f);
-    if (search.solution_found == 0U) {
-        return search.limit_reached != 0U ?
+    /* Central-sized pieces usually constrain a rectangular tiling fastest. */
+    for (piece_index = 1U; piece_index < search->piece_count; ++piece_index) {
+        uint8_t value = anchor_order[piece_index];
+        float average_area = search->total_area / (float)search->piece_count;
+        float value_delta = fabsf(polygon_signed_area(
+            search->pieces[value].vertices,
+            search->pieces[value].vertex_count) - average_area);
+        uint8_t insertion = piece_index;
+
+        while (insertion > 0U) {
+            uint8_t previous = anchor_order[insertion - 1U];
+            float previous_delta = fabsf(polygon_signed_area(
+                search->pieces[previous].vertices,
+                search->pieces[previous].vertex_count) - average_area);
+
+            if (previous_delta <= value_delta) {
+                break;
+            }
+            anchor_order[insertion] = previous;
+            --insertion;
+        }
+        anchor_order[insertion] = value;
+    }
+
+    for (anchor_index = 0U; anchor_index < search->piece_count; ++anchor_index) {
+        uint8_t anchor = anchor_order[anchor_index];
+
+        transforms[anchor].cosine = 1.0f;
+        transforms[anchor].sine = 0.0f;
+        transforms[anchor].tx = 0.0f;
+        transforms[anchor].ty = 0.0f;
+        search->nodes = 0U;
+        search->limit_reached = 0U;
+        search_layout(search,
+                      (uint8_t)(1U << anchor),
+                      transforms,
+                      0.0f);
+        any_limit_reached |= search->limit_reached;
+        if (search->solution_found != 0U) {
+            break;
+        }
+    }
+    if (search->solution_found == 0U) {
+        return any_limit_reached != 0U ?
             DECISION_RESULT_SEARCH_LIMIT : DECISION_RESULT_NO_SOLUTION;
     }
 
-    rectangle_center_x = 0.5f * (search.best_min_x + search.best_max_x);
-    rectangle_center_y = 0.5f * (search.best_min_y + search.best_max_y);
-    rectangle_cosine = cosf(search.best_rect_angle_rad);
-    rectangle_sine = sinf(search.best_rect_angle_rad);
+    rectangle_center_x = 0.5f * (search->best_min_x + search->best_max_x);
+    rectangle_center_y = 0.5f * (search->best_min_y + search->best_max_y);
+    rectangle_cosine = cosf(search->best_rect_angle_rad);
+    rectangle_sine = sinf(search->best_rect_angle_rad);
 
     (void)memset(plan, 0, sizeof(*plan));
     plan->seq = frame->seq;
-    for (piece_index = 0U; piece_index < search.piece_count; ++piece_index) {
-        DecisionPoint grasp = find_grasp_point(&search.pieces[piece_index]);
+    for (piece_index = 0U; piece_index < search->piece_count; ++piece_index) {
+        DecisionPoint grasp = find_grasp_point(&search->pieces[piece_index]);
         DecisionPoint layout_grasp = transform_point(
-            &search.best_transforms[piece_index], grasp);
+            &search->best_transforms[piece_index], grasp);
         DecisionPoint place;
-        float rotation_rad = atan2f(search.best_transforms[piece_index].sine,
-                                    search.best_transforms[piece_index].cosine) -
-                             search.best_rect_angle_rad;
+        float rotation_rad = atan2f(search->best_transforms[piece_index].sine,
+                                    search->best_transforms[piece_index].cosine) -
+                             search->best_rect_angle_rad;
 
         place.x_mm = config->target_center.x_mm +
             rectangle_cosine * layout_grasp.x_mm +
@@ -1074,7 +1657,7 @@ DecisionResult Decision_SolveGeneral(const DecisionVisionFrame *frame,
             rectangle_sine * layout_grasp.x_mm +
             rectangle_cosine * layout_grasp.y_mm - rectangle_center_y;
 
-        fill_move(&search.pieces[piece_index],
+        fill_move(&search->pieces[piece_index],
                   grasp,
                   place,
                   rotation_rad * 180.0f / DECISION_PI,
@@ -1091,7 +1674,7 @@ DecisionResult Decision_Solve(DecisionMode mode,
                               const DecisionConfig *config,
                               DecisionPlan *plan)
 {
-    if (mode == DECISION_MODE_FIXED_ID) {
+    if (mode == DECISION_MODE_FIXED_TEMPLATE) {
         return Decision_SolveFixed(frame, fixed_layout, config, plan);
     }
     if (mode == DECISION_MODE_GENERAL) {

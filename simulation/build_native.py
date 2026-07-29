@@ -18,6 +18,8 @@ BUILD_INPUTS = (
     SIMULATION_DIR / "native_bridge.c",
     DECISION_DIR / "decision.c",
     DECISION_DIR / "decision.h",
+    DECISION_DIR / "decision_template.c",
+    DECISION_DIR / "decision_template.h",
     TRAJECTORY_DIR / "trajectory.c",
     TRAJECTORY_DIR / "trajectory.h",
 )
@@ -54,6 +56,7 @@ def build_library(force: bool = False) -> Path:
         str(DLL_PATH),
         str(SIMULATION_DIR / "native_bridge.c"),
         str(DECISION_DIR / "decision.c"),
+        str(DECISION_DIR / "decision_template.c"),
         str(TRAJECTORY_DIR / "trajectory.c"),
         "-I",
         str(DECISION_DIR),

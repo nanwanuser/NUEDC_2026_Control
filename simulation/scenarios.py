@@ -23,12 +23,14 @@ from simulation.bindings import (
 )
 
 
-BASE_POLYGONS = (
-    ((0.0, 0.0), (100.0, 0.0), (50.0, 30.0)),
-    ((100.0, 0.0), (100.0, 60.0), (50.0, 30.0)),
-    ((100.0, 60.0), (0.0, 60.0), (50.0, 30.0)),
-    ((0.0, 60.0), (0.0, 0.0), (50.0, 30.0)),
+FIGURE2_POLYGONS = (
+    ((20.0, 0.0), (100.0, 0.0), (100.0, 60.0)),
+    ((0.0, 0.0), (20.0, 0.0), (36.0, 12.0), (0.0, 20.0)),
+    ((0.0, 20.0), (36.0, 12.0), (76.0, 42.0), (0.0, 30.0)),
+    ((0.0, 30.0), (76.0, 42.0), (100.0, 60.0), (0.0, 60.0)),
 )
+OBSERVATION_ORDER = (1, 3, 0, 2)
+OBSERVATION_IDS = (41, 7, 99, 12)
 ANGLES_DEG = (-18.0, 71.0, 143.0, -96.0)
 TRANSLATIONS_MM = (
     (30.0, 20.0),
@@ -36,7 +38,8 @@ TRANSLATIONS_MM = (
     (45.0, 105.0),
     (165.0, 115.0),
 )
-TARGET_OFFSET_MM = np.array([55.0, 190.0])
+TARGET_CENTER_MM = np.array([105.0, 220.0])
+TARGET_OFFSET_MM = TARGET_CENTER_MM - np.array([50.0, 30.0])
 
 
 @dataclass(frozen=True)
@@ -71,12 +74,13 @@ def _build_frame() -> DecisionVisionFrame:
     frame.seq = 20260729
     frame.piece_count = 4
 
-    for index, base_polygon in enumerate(BASE_POLYGONS):
+    for index, template_index in enumerate(OBSERVATION_ORDER):
+        base_polygon = FIGURE2_POLYGONS[template_index]
         vertices = _rotate_translate(
             base_polygon, ANGLES_DEG[index], TRANSLATIONS_MM[index]
         )
         piece = frame.pieces[index]
-        piece.id = 10 + index
+        piece.id = OBSERVATION_IDS[index]
         piece.vertex_count = len(base_polygon)
         _fill_point(piece.center, vertices.mean(axis=0))
         for vertex_index, vertex in enumerate(vertices):
@@ -89,14 +93,15 @@ def _build_fixed_layout() -> tuple[DecisionFixedLayout, dict[int, np.ndarray]]:
     layout.piece_count = 4
     targets: dict[int, np.ndarray] = {}
 
-    for index, base_polygon in enumerate(BASE_POLYGONS):
-        piece_id = 10 + index
+    library = load_library()
+    library.DecisionTemplate_GetFigure2Layout(
+        DecisionPoint(*TARGET_CENTER_MM), ctypes.byref(layout)
+    )
+
+    for index, template_index in enumerate(OBSERVATION_ORDER):
+        base_polygon = FIGURE2_POLYGONS[template_index]
+        piece_id = OBSERVATION_IDS[index]
         vertices = np.asarray(base_polygon, dtype=float) + TARGET_OFFSET_MM
-        target = layout.pieces[index]
-        target.id = piece_id
-        target.vertex_count = len(base_polygon)
-        for vertex_index, vertex in enumerate(vertices):
-            _fill_point(target.target_vertices[vertex_index], vertex)
         targets[piece_id] = vertices
     return layout, targets
 

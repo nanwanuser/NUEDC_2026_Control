@@ -46,6 +46,7 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     App/drivers/servo/Servo.c
     App/lib/decision/decision.c
+    App/lib/decision/decision_template.c
     App/lib/trajectory/trajectory.c
     App/lib/vision_json/vision_json.c
     Task/decision/decision_task.c

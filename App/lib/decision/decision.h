@@ -33,7 +33,9 @@ typedef struct {
 } DecisionVisionFrame;
 
 typedef enum {
-    DECISION_MODE_FIXED_ID = 0,
+    DECISION_MODE_FIXED_TEMPLATE = 0,
+    /* Deprecated name kept for API compatibility. */
+    DECISION_MODE_FIXED_ID = DECISION_MODE_FIXED_TEMPLATE,
     DECISION_MODE_GENERAL = 1
 } DecisionMode;
 
@@ -60,6 +62,11 @@ typedef struct {
     float max_short_side_mm;
     float min_long_side_mm;
     float max_long_side_mm;
+    float contact_min_mm;
+    float line_tolerance_mm;
+    float angle_tolerance_deg;
+    float pose_dedup_position_mm;
+    float pose_dedup_angle_deg;
     uint32_t max_search_nodes;
 } DecisionConfig;
 
@@ -100,6 +107,7 @@ DecisionResult Decision_SolveFixed(const DecisionVisionFrame *frame,
                                    const DecisionConfig *config,
                                    DecisionPlan *plan);
 
+/* Uses a static workspace and must not be called concurrently or recursively. */
 DecisionResult Decision_SolveGeneral(const DecisionVisionFrame *frame,
                                      const DecisionConfig *config,
                                      DecisionPlan *plan);
