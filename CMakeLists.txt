@@ -46,6 +46,7 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     App/drivers/servo/Servo.c
     App/lib/trajectory/trajectory.c
+    Task/route_planning/route_planning.c
 )
 
 
@@ -53,6 +54,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/App/drivers/servo
     ${CMAKE_CURRENT_SOURCE_DIR}/App/lib/trajectory
+    ${CMAKE_CURRENT_SOURCE_DIR}/Task/route_planning
 )
 
 # Add project symbols (macros)
