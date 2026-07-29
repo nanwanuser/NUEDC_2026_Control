@@ -11,7 +11,8 @@ DECISION_MAX_PIECES = 4
 DECISION_MAX_VERTICES = 5
 TRAJECTORY_AXIS_COUNT = 4
 TRAJECTORY_COEFFICIENT_COUNT = 6
-TRAJECTORY_TRANSFER_SEGMENT_COUNT = 2
+TRAJECTORY_MAX_WAYPOINTS = 6
+TRAJECTORY_MAX_SEGMENTS = TRAJECTORY_MAX_WAYPOINTS - 1
 
 DECISION_MODE_FIXED_ID = 0
 DECISION_MODE_GENERAL = 1
@@ -44,12 +45,19 @@ class TrajectoryLimits(ctypes.Structure):
     ]
 
 
+class TrajectoryPath(ctypes.Structure):
+    """Ordered waypoints of one phase; the tool stops only at both ends."""
+
+    _fields_ = [
+        ("point_count", ctypes.c_uint8),
+        ("points", TrajectoryPose * TRAJECTORY_MAX_WAYPOINTS),
+    ]
+
+
 class TrajectoryRequest(ctypes.Structure):
     _fields_ = [
-        ("current", TrajectoryPose),
-        ("pick", TrajectoryPose),
-        ("transit", TrajectoryPose),
-        ("place", TrajectoryPose),
+        ("approach", TrajectoryPath),
+        ("transfer", TrajectoryPath),
         ("limits", TrajectoryLimits),
     ]
 
@@ -68,11 +76,18 @@ class TrajectorySegment(ctypes.Structure):
     ]
 
 
+class TrajectoryPhasePlan(ctypes.Structure):
+    _fields_ = [
+        ("segment_count", ctypes.c_uint8),
+        ("segments", TrajectorySegment * TRAJECTORY_MAX_SEGMENTS),
+        ("duration_s", ctypes.c_float),
+    ]
+
+
 class TrajectoryPlan(ctypes.Structure):
     _fields_ = [
-        ("approach", TrajectorySegment),
-        ("transfer", TrajectorySegment * TRAJECTORY_TRANSFER_SEGMENT_COUNT),
-        ("transfer_duration_s", ctypes.c_float),
+        ("approach", TrajectoryPhasePlan),
+        ("transfer", TrajectoryPhasePlan),
     ]
 
 
@@ -130,10 +145,13 @@ class DecisionConfig(ctypes.Structure):
 
 
 class DecisionMove(ctypes.Structure):
+    """Both lift poses sit at transit_z_mm, directly above pick and place."""
+
     _fields_ = [
         ("piece_id", ctypes.c_uint8),
         ("pick", TrajectoryPose),
-        ("transit", TrajectoryPose),
+        ("pick_above", TrajectoryPose),
+        ("place_above", TrajectoryPose),
         ("place", TrajectoryPose),
     ]
 
@@ -160,6 +178,20 @@ def _configure_library(library: ctypes.CDLL) -> None:
         ctypes.POINTER(DecisionPlan),
     ]
     library.Decision_Solve.restype = ctypes.c_int
+    library.Decision_BuildTrajectoryRequest.argtypes = [
+        ctypes.POINTER(DecisionMove),
+        ctypes.POINTER(TrajectoryPose),
+        ctypes.POINTER(TrajectoryLimits),
+        ctypes.POINTER(TrajectoryRequest),
+    ]
+    library.Decision_BuildTrajectoryRequest.restype = ctypes.c_uint8
+    library.Trajectory_PathReset.argtypes = [ctypes.POINTER(TrajectoryPath)]
+    library.Trajectory_PathReset.restype = None
+    library.Trajectory_PathAppend.argtypes = [
+        ctypes.POINTER(TrajectoryPath),
+        ctypes.POINTER(TrajectoryPose),
+    ]
+    library.Trajectory_PathAppend.restype = ctypes.c_uint8
     library.Trajectory_Generate.argtypes = [
         ctypes.POINTER(TrajectoryRequest),
         ctypes.POINTER(TrajectoryPlan),
