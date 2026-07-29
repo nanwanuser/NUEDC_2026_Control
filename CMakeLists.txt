@@ -44,38 +44,13 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
-    App/drivers/gray_sensor/Gray_Sensor.c
-    App/drivers/icm42688p/icm42688p.c
-    App/drivers/motor/motor.c
-    App/drivers/pd42s1/pd42s1.c
     App/drivers/servo/Servo.c
-    App/lib/imu_fusion/imu_fusion.c
-    App/lib/imu_service/app_imu.c
-    App/lib/max485/max485.c
-    App/lib/simulink_pid/simulink_pid_ert_rtw/simulink_pid.c
-    App/lib/simulink_pid/simulink_pid_ert_rtw/simulink_pid_data.c
-    Task/Gimbal_ctrl_Task/Gimbal_ctrl_Task.c
-    Task/Gimbal_ctrl_Task/Gimbal_ctrl_Motion.c
-    Task/Gimbal_ctrl_Task/Gimbal_ctrl_Vision.c
-    App/drivers/motor/motor_speed_control.c
-    Task/track_line/track_line.c
 )
 
 
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/App/drivers/gray_sensor
-    ${CMAKE_CURRENT_SOURCE_DIR}/App/drivers/icm42688p
-    ${CMAKE_CURRENT_SOURCE_DIR}/App/drivers/motor
-    ${CMAKE_CURRENT_SOURCE_DIR}/App/drivers/pd42s1
     ${CMAKE_CURRENT_SOURCE_DIR}/App/drivers/servo
-    ${CMAKE_CURRENT_SOURCE_DIR}/App/lib/imu_fusion
-    ${CMAKE_CURRENT_SOURCE_DIR}/App/lib/imu_service
-    ${CMAKE_CURRENT_SOURCE_DIR}/App/lib/max485
-    ${CMAKE_CURRENT_SOURCE_DIR}/App/lib/simulink_pid
-    ${CMAKE_CURRENT_SOURCE_DIR}/App/lib/simulink_pid/simulink_pid_ert_rtw
-    ${CMAKE_CURRENT_SOURCE_DIR}/Task/Gimbal_ctrl_Task
-    ${CMAKE_CURRENT_SOURCE_DIR}/Task/track_line
 )
 
 # Add project symbols (macros)

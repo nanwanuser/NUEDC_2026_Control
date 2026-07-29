@@ -25,7 +25,6 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -35,7 +34,6 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -45,7 +43,6 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
-volatile HAL_StatusTypeDef gimbal_ctrl_status = HAL_ERROR;
 
 /* USER CODE END Variables */
 /* Definitions for defaultTask */
@@ -55,18 +52,25 @@ const osThreadAttr_t defaultTask_attributes = {
   .stack_size = 128 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
-/* Definitions for Track_line */
-osThreadId_t Track_lineHandle;
-const osThreadAttr_t Track_line_attributes = {
-  .name = "Track_line",
+/* Definitions for Robot_arm_ctrl */
+osThreadId_t Robot_arm_ctrlHandle;
+const osThreadAttr_t Robot_arm_ctrl_attributes = {
+  .name = "Robot_arm_ctrl",
   .stack_size = 512 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
-/* Definitions for Gimbal_ctrl */
-osThreadId_t Gimbal_ctrlHandle;
-const osThreadAttr_t Gimbal_ctrl_attributes = {
-  .name = "Gimbal_ctrl",
-  .stack_size = 512 * 4,
+/* Definitions for Decision */
+osThreadId_t DecisionHandle;
+const osThreadAttr_t Decision_attributes = {
+  .name = "Decision",
+  .stack_size = 2048 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
+/* Definitions for Route_planning */
+osThreadId_t Route_planningHandle;
+const osThreadAttr_t Route_planning_attributes = {
+  .name = "Route_planning",
+  .stack_size = 1024 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
 
@@ -76,8 +80,9 @@ const osThreadAttr_t Gimbal_ctrl_attributes = {
 /* USER CODE END FunctionPrototypes */
 
 void StartDefaultTask(void *argument);
-void Track_line_App(void *argument);
-void Gimbal_ctrl_App(void *argument);
+void Robot_arm_ctrl_App(void *argument);
+void Decision_App(void *argument);
+void Route_planning_App(void *argument);
 
 void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
 
@@ -111,11 +116,14 @@ void MX_FREERTOS_Init(void) {
   /* creation of defaultTask */
   defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
 
-  /* creation of Track_line */
-  Track_lineHandle = osThreadNew(Track_line_App, NULL, &Track_line_attributes);
+  /* creation of Robot_arm_ctrl */
+  Robot_arm_ctrlHandle = osThreadNew(Robot_arm_ctrl_App, NULL, &Robot_arm_ctrl_attributes);
 
-  /* creation of Gimbal_ctrl */
-  Gimbal_ctrlHandle = osThreadNew(Gimbal_ctrl_App, NULL, &Gimbal_ctrl_attributes);
+  /* creation of Decision */
+  DecisionHandle = osThreadNew(Decision_App, NULL, &Decision_attributes);
+
+  /* creation of Route_planning */
+  Route_planningHandle = osThreadNew(Route_planning_App, NULL, &Route_planning_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -140,56 +148,65 @@ void StartDefaultTask(void *argument)
   (void)argument;
 
   /* Infinite loop */
-  for (;;)
+  for(;;)
   {
-    HAL_GPIO_WritePin(User_LED_GPIO_Port, User_LED_Pin, GPIO_PIN_SET);
-    osDelay(70U);
-    HAL_GPIO_WritePin(User_LED_GPIO_Port, User_LED_Pin, GPIO_PIN_RESET);
-    osDelay(245U);
-    HAL_GPIO_WritePin(User_LED_GPIO_Port, User_LED_Pin, GPIO_PIN_SET);
-    osDelay(70U);
-    HAL_GPIO_WritePin(User_LED_GPIO_Port, User_LED_Pin, GPIO_PIN_RESET);
-    osDelay(875U);
+    osDelay(1);
   }
   /* USER CODE END StartDefaultTask */
 }
 
-/* USER CODE BEGIN Header_Track_line_App */
+/* USER CODE BEGIN Header_Robot_arm_ctrl_App */
 /**
-* @brief Function implementing the Track_line thread.
+* @brief Function implementing the Robot_arm_ctrl thread.
 * @param argument: Not used
 * @retval None
 */
-/* USER CODE END Header_Track_line_App */
-__weak void Track_line_App(void *argument)
+/* USER CODE END Header_Robot_arm_ctrl_App */
+__weak void Robot_arm_ctrl_App(void *argument)
 {
-  /* USER CODE BEGIN Track_line_App */
+  /* USER CODE BEGIN Robot_arm_ctrl_App */
   /* Infinite loop */
   for(;;)
   {
     osDelay(1);
   }
-  /* USER CODE END Track_line_App */
+  /* USER CODE END Robot_arm_ctrl_App */
 }
 
-/* USER CODE BEGIN Header_Gimbal_ctrl_App */
+/* USER CODE BEGIN Header_Decision_App */
 /**
-* @brief Function implementing the Gimbal_ctrl thread.
+* @brief Function implementing the Decision thread.
 * @param argument: Not used
 * @retval None
 */
-/* USER CODE END Header_Gimbal_ctrl_App */
-__weak void Gimbal_ctrl_App(void *argument)
+/* USER CODE END Header_Decision_App */
+__weak void Decision_App(void *argument)
 {
-  /* USER CODE BEGIN Gimbal_ctrl_App */
-  (void)argument;
-
+  /* USER CODE BEGIN Decision_App */
   /* Infinite loop */
-  for (;;)
+  for(;;)
   {
     osDelay(1);
   }
-  /* USER CODE END Gimbal_ctrl_App */
+  /* USER CODE END Decision_App */
+}
+
+/* USER CODE BEGIN Header_Route_planning_App */
+/**
+* @brief Function implementing the Route_planning thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_Route_planning_App */
+__weak void Route_planning_App(void *argument)
+{
+  /* USER CODE BEGIN Route_planning_App */
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
+  /* USER CODE END Route_planning_App */
 }
 
 /* Private application code --------------------------------------------------*/

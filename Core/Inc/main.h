@@ -57,42 +57,14 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
-#define PWMA1_Pin GPIO_PIN_5
-#define PWMA1_GPIO_Port GPIOE
-#define PWMB1_Pin GPIO_PIN_6
-#define PWMB1_GPIO_Port GPIOE
-#define User_LED_Pin GPIO_PIN_0
-#define User_LED_GPIO_Port GPIOC
-#define RS_TX_Pin GPIO_PIN_2
-#define RS_TX_GPIO_Port GPIOA
-#define RS_RX_Pin GPIO_PIN_3
-#define RS_RX_GPIO_Port GPIOA
-#define EN485_Pin GPIO_PIN_8
-#define EN485_GPIO_Port GPIOE
-#define H2A_Pin GPIO_PIN_12
-#define H2A_GPIO_Port GPIOD
-#define H2B_Pin GPIO_PIN_13
-#define H2B_GPIO_Port GPIOD
-#define GRAY_OUT_Pin GPIO_PIN_8
-#define GRAY_OUT_GPIO_Port GPIOD
-#define GRAY_AD0_Pin GPIO_PIN_9
-#define GRAY_AD0_GPIO_Port GPIOD
-#define GRAY_AD1_Pin GPIO_PIN_10
-#define GRAY_AD1_GPIO_Port GPIOD
-#define GRAY_AD2_Pin GPIO_PIN_11
-#define GRAY_AD2_GPIO_Port GPIOD
-#define BIN2_Pin GPIO_PIN_8
-#define BIN2_GPIO_Port GPIOA
-#define BIN1_Pin GPIO_PIN_9
-#define BIN1_GPIO_Port GPIOA
-#define AIN2_Pin GPIO_PIN_10
-#define AIN2_GPIO_Port GPIOA
-#define AIN1_Pin GPIO_PIN_11
-#define AIN1_GPIO_Port GPIOA
-#define H1A_Pin GPIO_PIN_15
-#define H1A_GPIO_Port GPIOA
-#define H1B_Pin GPIO_PIN_3
-#define H1B_GPIO_Port GPIOB
+#define PWM1_Pin GPIO_PIN_5
+#define PWM1_GPIO_Port GPIOE
+#define PWM2_Pin GPIO_PIN_6
+#define PWM2_GPIO_Port GPIOE
+#define PWM4_Pin GPIO_PIN_14
+#define PWM4_GPIO_Port GPIOB
+#define PWM3_Pin GPIO_PIN_15
+#define PWM3_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 
