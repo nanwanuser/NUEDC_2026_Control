@@ -1099,3 +1099,20 @@ DecisionResult Decision_Solve(DecisionMode mode,
     }
     return DECISION_RESULT_INVALID_ARGUMENT;
 }
+
+uint8_t Decision_BuildTrajectoryRequest(const DecisionMove *move,
+                                        const TrajectoryPose *current,
+                                        const TrajectoryLimits *limits,
+                                        TrajectoryRequest *request)
+{
+    if (move == NULL || current == NULL || limits == NULL || request == NULL) {
+        return 0U;
+    }
+
+    request->current = *current;
+    request->pick = move->pick;
+    request->transit = move->transit;
+    request->place = move->place;
+    request->limits = *limits;
+    return 1U;
+}

@@ -55,16 +55,35 @@ transit.z   = config.transit_z_mm
 ## 调用示例
 
 ```c
-DecisionTaskRequest request = {0};
+DecisionTaskRequest request;
 
+DecisionTask_GetDefaultRequest(&request);
 request.mode = DECISION_MODE_GENERAL;
 request.vision = vision_frame;
-Decision_GetDefaultConfig(&request.config);
 request.config.target_center.x_mm = 105.0f;
 request.config.target_center.y_mm = 220.0f;
+request.execution.current_pose = robot_current_pose;
 
 DecisionTask_Submit(&request);
 ```
 
 固定模式还需要填写 `request.fixed_layout`。模板的顶点起点和绕行方向可以与
 视觉输出不同，模块会自动尝试循环移位和反向匹配。
+
+## 轨迹接入
+
+求解成功后，`DecisionTask` 会自动把每个 `DecisionMove` 转换为
+`TrajectoryRequest` 并依次提交给 `RoutePlanning`：
+
+```text
+current -> pick -> 等待吸附 -> transit -> place -> 等待释放 -> 下一片
+```
+
+第一片的 `current` 使用 `request.execution.current_pose`，后续碎片自动使用上一片
+的 `place`。速度、加速度和等待时间位于 `request.execution`。执行状态通过
+`DecisionTask_Output.execution_state` 查看；轨迹生成错误通过
+`DecisionTask_Output.trajectory_result` 查看。
+
+当前吸附和释放使用定时等待。接入负压或工具反馈后，可以在
+`DECISION_EXECUTION_GRIP_DWELL` 和 `DECISION_EXECUTION_RELEASE_DWELL` 状态替换
+为反馈确认。

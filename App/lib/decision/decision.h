@@ -104,6 +104,11 @@ DecisionResult Decision_SolveGeneral(const DecisionVisionFrame *frame,
                                      const DecisionConfig *config,
                                      DecisionPlan *plan);
 
+uint8_t Decision_BuildTrajectoryRequest(const DecisionMove *move,
+                                        const TrajectoryPose *current,
+                                        const TrajectoryLimits *limits,
+                                        TrajectoryRequest *request);
+
 #ifdef __cplusplus
 }
 #endif

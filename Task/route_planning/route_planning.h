@@ -21,6 +21,7 @@ typedef struct {
     TrajectoryResult result;
     float elapsed_s;
     TrajectoryReference reference;
+    uint8_t active;
 } RoutePlanningOutput;
 
 /* Shared variables are the task-to-task interface. */
@@ -32,6 +33,8 @@ extern volatile RoutePlanningOutput RoutePlanning_Output;
 void RoutePlanning_Init(void);
 uint8_t RoutePlanning_Submit(const RoutePlanningRequest *request);
 void RoutePlanning_ResumeTransfer(void);
+void RoutePlanning_Cancel(void);
+void RoutePlanning_GetOutput(RoutePlanningOutput *output);
 void Route_planning_App(void *argument);
 
 #ifdef __cplusplus

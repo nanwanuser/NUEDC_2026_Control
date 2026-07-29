@@ -9,6 +9,7 @@ enable_testing()
 add_executable(decision_test
     decision_test.c
     ../../App/lib/decision/decision.c
+    ../../App/lib/trajectory/trajectory.c
 )
 
 target_include_directories(decision_test PRIVATE

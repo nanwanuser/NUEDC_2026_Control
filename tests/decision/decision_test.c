@@ -385,6 +385,38 @@ static void test_general_mode_handles_irregular_pieces(void)
     ASSERT_NEAR(6000.0f, (max_x - min_x) * (max_y - min_y), 1.0f);
 }
 
+static void test_decision_move_builds_trajectory(void)
+{
+    const DecisionMove move = {
+        .piece_id = 2U,
+        .pick = {40.0f, 60.0f, 0.0f, 0.0f},
+        .transit = {40.0f, 60.0f, 40.0f, 35.0f},
+        .place = {105.0f, 220.0f, 0.0f, 35.0f}
+    };
+    const TrajectoryPose current = {0.0f, 0.0f, 40.0f, 0.0f};
+    const TrajectoryLimits limits = {120.0f, 300.0f, 90.0f, 180.0f};
+    TrajectoryRequest request;
+    TrajectoryPlan trajectory;
+
+    ASSERT_TRUE(Decision_BuildTrajectoryRequest(&move,
+                                                &current,
+                                                &limits,
+                                                &request) != 0U);
+    ASSERT_NEAR(current.x_mm, request.current.x_mm, 0.001f);
+    ASSERT_NEAR(move.pick.x_mm, request.pick.x_mm, 0.001f);
+    ASSERT_NEAR(move.transit.z_mm, request.transit.z_mm, 0.001f);
+    ASSERT_NEAR(move.place.y_mm, request.place.y_mm, 0.001f);
+    ASSERT_NEAR(limits.max_linear_velocity_mm_s,
+                request.limits.max_linear_velocity_mm_s,
+                0.001f);
+    ASSERT_EQ_INT(TRAJECTORY_RESULT_OK,
+                  Trajectory_Generate(&request, &trajectory));
+    ASSERT_TRUE(Trajectory_GetDuration(&trajectory,
+                                       TRAJECTORY_PHASE_APPROACH) > 0.0f);
+    ASSERT_TRUE(Trajectory_GetDuration(&trajectory,
+                                       TRAJECTORY_PHASE_TRANSFER) > 0.0f);
+}
+
 int main(void)
 {
     test_fixed_mode_recovers_rotation();
@@ -392,6 +424,7 @@ int main(void)
     test_general_mode_builds_horizontal_rectangle();
     test_general_mode_handles_irregular_pieces();
     test_general_mode_rejects_non_rectangle();
+    test_decision_move_builds_trajectory();
     puts("decision tests passed");
     return EXIT_SUCCESS;
 }

@@ -10,15 +10,38 @@ extern "C" {
 #include "decision.h"
 
 typedef struct {
+    TrajectoryPose current_pose;
+    TrajectoryLimits limits;
+    uint32_t grip_dwell_ms;
+    uint32_t release_dwell_ms;
+} DecisionExecutionConfig;
+
+typedef enum {
+    DECISION_EXECUTION_IDLE = 0,
+    DECISION_EXECUTION_WAITING_ROUTE,
+    DECISION_EXECUTION_APPROACH,
+    DECISION_EXECUTION_GRIP_DWELL,
+    DECISION_EXECUTION_TRANSFER,
+    DECISION_EXECUTION_RELEASE_DWELL,
+    DECISION_EXECUTION_COMPLETE,
+    DECISION_EXECUTION_ERROR
+} DecisionExecutionState;
+
+typedef struct {
     DecisionMode mode;
     DecisionVisionFrame vision;
     DecisionFixedLayout fixed_layout;
     DecisionConfig config;
+    DecisionExecutionConfig execution;
 } DecisionTaskRequest;
 
 typedef struct {
     DecisionResult result;
     DecisionPlan plan;
+    DecisionExecutionState execution_state;
+    TrajectoryResult trajectory_result;
+    uint8_t active_move_index;
+    uint32_t active_route_plan_id;
 } DecisionTaskOutput;
 
 extern volatile DecisionTaskRequest DecisionTask_Input;
@@ -26,6 +49,7 @@ extern volatile uint8_t DecisionTask_RequestPending;
 extern volatile DecisionTaskOutput DecisionTask_Output;
 
 void DecisionTask_Init(void);
+void DecisionTask_GetDefaultRequest(DecisionTaskRequest *request);
 uint8_t DecisionTask_Submit(const DecisionTaskRequest *request);
 void Decision_App(void *argument);
 
