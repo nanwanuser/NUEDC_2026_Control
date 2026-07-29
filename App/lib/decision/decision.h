@@ -51,6 +51,7 @@ typedef struct {
 typedef struct {
     DecisionPoint target_center;
     float pick_z_mm;
+    /* Cruise height used above the pick and the place location. */
     float transit_z_mm;
     float place_z_mm;
     float edge_length_tolerance_mm;
@@ -63,10 +64,12 @@ typedef struct {
     uint32_t max_search_nodes;
 } DecisionConfig;
 
+/* Both lift poses sit at transit_z_mm, directly above pick and place. */
 typedef struct {
     uint8_t piece_id;
     TrajectoryPose pick;
-    TrajectoryPose transit;
+    TrajectoryPose pick_above;
+    TrajectoryPose place_above;
     TrajectoryPose place;
 } DecisionMove;
 
@@ -104,6 +107,8 @@ DecisionResult Decision_SolveGeneral(const DecisionVisionFrame *frame,
                                      const DecisionConfig *config,
                                      DecisionPlan *plan);
 
+/* Builds current -> lift -> above pick -> pick and pick -> above pick ->
+   above place -> place, so no leg of the motion travels near the board. */
 uint8_t Decision_BuildTrajectoryRequest(const DecisionMove *move,
                                         const TrajectoryPose *current,
                                         const TrajectoryLimits *limits,
