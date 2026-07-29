@@ -8,6 +8,7 @@
 #define TRAJECTORY_YAW_HALF_PERIOD_DEG     180.0f
 #define TRAJECTORY_QUINTIC_MAX_VELOCITY    1.875f
 #define TRAJECTORY_QUINTIC_MAX_ACCELERATION 5.773503f
+#define TRAJECTORY_DURATION_SCALE_MARGIN   1.0001f
 
 enum {
     TRAJECTORY_AXIS_X = 0,
@@ -204,6 +205,129 @@ static float evaluate_polynomial(const float coefficient[TRAJECTORY_COEFFICIENT_
     return value;
 }
 
+static void power_to_bezier(
+    const float coefficient[TRAJECTORY_COEFFICIENT_COUNT],
+    float bezier[TRAJECTORY_COEFFICIENT_COUNT])
+{
+    bezier[0] = coefficient[0];
+    bezier[1] = coefficient[0] + coefficient[1] / 5.0f;
+    bezier[2] = coefficient[0] + 2.0f * coefficient[1] / 5.0f +
+                coefficient[2] / 10.0f;
+    bezier[3] = coefficient[0] + 3.0f * coefficient[1] / 5.0f +
+                3.0f * coefficient[2] / 10.0f + coefficient[3] / 10.0f;
+    bezier[4] = coefficient[0] + 4.0f * coefficient[1] / 5.0f +
+                3.0f * coefficient[2] / 5.0f +
+                2.0f * coefficient[3] / 5.0f + coefficient[4] / 5.0f;
+    bezier[5] = coefficient[0] + coefficient[1] + coefficient[2] +
+                coefficient[3] + coefficient[4] + coefficient[5];
+}
+
+static float segment_required_scale(const TrajectorySegment *segment,
+                                    const TrajectoryLimits *limits)
+{
+    float bezier[TRAJECTORY_AXIS_COUNT][TRAJECTORY_COEFFICIENT_COUNT];
+    float first[TRAJECTORY_AXIS_COUNT][5];
+    float second[TRAJECTORY_AXIS_COUNT][4];
+    float max_linear_velocity = 0.0f;
+    float max_linear_acceleration = 0.0f;
+    float max_yaw_velocity = 0.0f;
+    float max_yaw_acceleration = 0.0f;
+    float duration_squared;
+    float scale = 1.0f;
+    uint32_t axis;
+    uint32_t index;
+
+    if (segment->duration_s <= 0.0f) {
+        return 1.0f;
+    }
+
+    duration_squared = segment->duration_s * segment->duration_s;
+    for (axis = 0U; axis < TRAJECTORY_AXIS_COUNT; ++axis) {
+        power_to_bezier(segment->coefficient[axis], bezier[axis]);
+        for (index = 0U; index < 5U; ++index) {
+            first[axis][index] = 5.0f *
+                (bezier[axis][index + 1U] - bezier[axis][index]);
+        }
+        for (index = 0U; index < 4U; ++index) {
+            second[axis][index] = 4.0f *
+                (first[axis][index + 1U] - first[axis][index]);
+        }
+    }
+
+    for (index = 0U; index < 5U; ++index) {
+        float linear_velocity = sqrtf(
+            first[TRAJECTORY_AXIS_X][index] * first[TRAJECTORY_AXIS_X][index] +
+            first[TRAJECTORY_AXIS_Y][index] * first[TRAJECTORY_AXIS_Y][index] +
+            first[TRAJECTORY_AXIS_Z][index] * first[TRAJECTORY_AXIS_Z][index]) /
+            segment->duration_s;
+        float yaw_velocity =
+            fabsf(first[TRAJECTORY_AXIS_YAW][index]) / segment->duration_s;
+
+        max_linear_velocity = max_float(max_linear_velocity, linear_velocity);
+        max_yaw_velocity = max_float(max_yaw_velocity, yaw_velocity);
+    }
+
+    for (index = 0U; index < 4U; ++index) {
+        float linear_acceleration = sqrtf(
+            second[TRAJECTORY_AXIS_X][index] * second[TRAJECTORY_AXIS_X][index] +
+            second[TRAJECTORY_AXIS_Y][index] * second[TRAJECTORY_AXIS_Y][index] +
+            second[TRAJECTORY_AXIS_Z][index] * second[TRAJECTORY_AXIS_Z][index]) /
+            duration_squared;
+        float yaw_acceleration =
+            fabsf(second[TRAJECTORY_AXIS_YAW][index]) / duration_squared;
+
+        max_linear_acceleration = max_float(max_linear_acceleration,
+                                            linear_acceleration);
+        max_yaw_acceleration = max_float(max_yaw_acceleration,
+                                         yaw_acceleration);
+    }
+
+    scale = max_float(scale,
+                      max_linear_velocity /
+                      limits->max_linear_velocity_mm_s);
+    scale = max_float(scale,
+                      sqrtf(max_linear_acceleration /
+                            limits->max_linear_acceleration_mm_s2));
+    scale = max_float(scale,
+                      max_yaw_velocity /
+                      limits->max_yaw_velocity_deg_s);
+    scale = max_float(scale,
+                      sqrtf(max_yaw_acceleration /
+                            limits->max_yaw_acceleration_deg_s2));
+
+    return scale;
+}
+
+static uint8_t scale_plan_durations(TrajectoryPlan *plan,
+                                    const TrajectoryLimits *limits)
+{
+    float approach_scale = segment_required_scale(&plan->approach, limits);
+    float transfer_scale = max_float(
+        segment_required_scale(&plan->transfer[0], limits),
+        segment_required_scale(&plan->transfer[1], limits));
+
+    if (!isfinite(approach_scale) || !isfinite(transfer_scale)) {
+        return 0U;
+    }
+
+    if (approach_scale > 1.0f) {
+        plan->approach.duration_s *=
+            approach_scale * TRAJECTORY_DURATION_SCALE_MARGIN;
+    }
+
+    if (transfer_scale > 1.0f) {
+        float scale = transfer_scale * TRAJECTORY_DURATION_SCALE_MARGIN;
+
+        plan->transfer[0].duration_s *= scale;
+        plan->transfer[1].duration_s *= scale;
+    }
+
+    plan->transfer_duration_s = plan->transfer[0].duration_s +
+                                plan->transfer[1].duration_s;
+    return (uint8_t)(isfinite(plan->approach.duration_s) &&
+                     isfinite(plan->transfer_duration_s));
+}
+
 static void evaluate_segment(const TrajectorySegment *segment,
                              float time_s,
                              TrajectoryPose *pose)
@@ -322,7 +446,8 @@ TrajectoryResult Trajectory_Generate(const TrajectoryRequest *request,
                               &plan->transfer[1]);
     plan->transfer_duration_s = first_duration_s + second_duration_s;
 
-    if (!isfinite(plan->transfer_duration_s)) {
+    if (!isfinite(plan->transfer_duration_s) ||
+        !scale_plan_durations(plan, &request->limits)) {
         return TRAJECTORY_RESULT_NUMERIC_ERROR;
     }
 
