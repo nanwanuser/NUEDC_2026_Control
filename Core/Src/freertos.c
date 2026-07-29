@@ -25,6 +25,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "decision_task.h"
 #include "route_planning.h"
 /* USER CODE END Includes */
 
@@ -94,6 +95,7 @@ void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
   */
 void MX_FREERTOS_Init(void) {
   /* USER CODE BEGIN Init */
+  DecisionTask_Init();
   RoutePlanning_Init();
   /* USER CODE END Init */
 

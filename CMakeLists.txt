@@ -45,7 +45,9 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     App/drivers/servo/Servo.c
+    App/lib/decision/decision.c
     App/lib/trajectory/trajectory.c
+    Task/decision/decision_task.c
     Task/route_planning/route_planning.c
 )
 
@@ -53,7 +55,9 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/App/drivers/servo
+    ${CMAKE_CURRENT_SOURCE_DIR}/App/lib/decision
     ${CMAKE_CURRENT_SOURCE_DIR}/App/lib/trajectory
+    ${CMAKE_CURRENT_SOURCE_DIR}/Task/decision
     ${CMAKE_CURRENT_SOURCE_DIR}/Task/route_planning
 )
 
