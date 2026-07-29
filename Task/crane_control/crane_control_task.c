@@ -8,9 +8,7 @@
 
 static void snapshot_planner_output(RoutePlanningOutput *output)
 {
-    taskENTER_CRITICAL();
-    *output = RoutePlanning_Output;
-    taskEXIT_CRITICAL();
+    RoutePlanning_GetOutput(output);
 }
 
 /**

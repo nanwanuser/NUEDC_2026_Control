@@ -12,6 +12,7 @@ volatile RoutePlanningRequest RoutePlanning_Input;
 volatile uint8_t RoutePlanning_RequestPending;
 volatile uint8_t RoutePlanning_ResumeTransferRequested;
 volatile RoutePlanningOutput RoutePlanning_Output;
+static volatile uint8_t RoutePlanning_CancelRequested;
 
 static void copy_input(RoutePlanningRequest *request)
 {
@@ -30,6 +31,17 @@ static uint8_t take_resume_request(void)
     RoutePlanning_ResumeTransferRequested = 0U;
     taskEXIT_CRITICAL();
 
+    return requested;
+}
+
+static uint8_t take_cancel_request(void)
+{
+    uint8_t requested;
+
+    taskENTER_CRITICAL();
+    requested = RoutePlanning_CancelRequested;
+    RoutePlanning_CancelRequested = 0U;
+    taskEXIT_CRITICAL();
     return requested;
 }
 
@@ -58,6 +70,7 @@ void RoutePlanning_Init(void)
     RoutePlanning_Output.result = TRAJECTORY_RESULT_INVALID_ARGUMENT;
     RoutePlanning_RequestPending = 0U;
     RoutePlanning_ResumeTransferRequested = 0U;
+    RoutePlanning_CancelRequested = 0U;
 }
 
 uint8_t RoutePlanning_Submit(const RoutePlanningRequest *request)
@@ -70,6 +83,7 @@ uint8_t RoutePlanning_Submit(const RoutePlanningRequest *request)
     RoutePlanning_Input = *request;
     RoutePlanning_RequestPending = 1U;
     RoutePlanning_ResumeTransferRequested = 0U;
+    RoutePlanning_CancelRequested = 0U;
     taskEXIT_CRITICAL();
 
     return 1U;
@@ -79,6 +93,26 @@ void RoutePlanning_ResumeTransfer(void)
 {
     taskENTER_CRITICAL();
     RoutePlanning_ResumeTransferRequested = 1U;
+    taskEXIT_CRITICAL();
+}
+
+void RoutePlanning_Cancel(void)
+{
+    taskENTER_CRITICAL();
+    RoutePlanning_RequestPending = 0U;
+    RoutePlanning_ResumeTransferRequested = 0U;
+    RoutePlanning_CancelRequested = 1U;
+    taskEXIT_CRITICAL();
+}
+
+void RoutePlanning_GetOutput(RoutePlanningOutput *output)
+{
+    if (output == NULL) {
+        return;
+    }
+
+    taskENTER_CRITICAL();
+    *output = RoutePlanning_Output;
     taskEXIT_CRITICAL();
 }
 
@@ -95,8 +129,18 @@ void Route_planning_App(void *argument)
     uint8_t plan_active = 0U;
 
     (void)argument;
+    (void)memset(&output, 0, sizeof(output));
+    output.state = TRAJECTORY_STATE_INVALID_ARGUMENT;
+    output.result = TRAJECTORY_RESULT_INVALID_ARGUMENT;
 
     for (;;) {
+        if (RoutePlanning_CancelRequested != 0U) {
+            (void)take_cancel_request();
+            plan_active = 0U;
+            output.active = 0U;
+            publish_output(&output);
+        }
+
         if (RoutePlanning_RequestPending != 0U) {
             copy_input(&request);
             result = Trajectory_Generate(&request.trajectory, &plan);
@@ -107,6 +151,15 @@ void Route_planning_App(void *argument)
 
             if (result == TRAJECTORY_RESULT_OK) {
                 plan_active = 1U;
+                output.plan_id = active_plan_id;
+                output.phase = phase;
+                output.state = TRAJECTORY_STATE_RUNNING;
+                output.result = result;
+                output.elapsed_s = 0.0f;
+                output.reference.pose = request.trajectory.approach.points[0];
+                output.reference.grip = 0U;
+                output.active = 1U;
+                publish_output(&output);
             } else {
                 plan_active = 0U;
                 output.plan_id = active_plan_id;
@@ -115,6 +168,7 @@ void Route_planning_App(void *argument)
                 output.result = result;
                 output.elapsed_s = 0.0f;
                 (void)memset(&output.reference, 0, sizeof(output.reference));
+                output.active = 0U;
                 publish_output(&output);
             }
         }
@@ -129,15 +183,20 @@ void Route_planning_App(void *argument)
             output.state = state;
             output.result = TRAJECTORY_RESULT_OK;
             output.elapsed_s = elapsed_s;
-            publish_output(&output);
+            output.active = 1U;
 
-            if ((phase == TRAJECTORY_PHASE_APPROACH) &&
-                (state == TRAJECTORY_STATE_COMPLETE) &&
-                (RoutePlanning_ResumeTransferRequested != 0U)) {
+            if ((phase == TRAJECTORY_PHASE_TRANSFER) &&
+                (state == TRAJECTORY_STATE_COMPLETE)) {
+                plan_active = 0U;
+                output.active = 0U;
+            } else if ((phase == TRAJECTORY_PHASE_APPROACH) &&
+                       (state == TRAJECTORY_STATE_COMPLETE) &&
+                       (RoutePlanning_ResumeTransferRequested != 0U)) {
                 (void)take_resume_request();
                 phase = TRAJECTORY_PHASE_TRANSFER;
                 phase_start_tick = now;
             }
+            publish_output(&output);
         }
 
         osDelay(ROUTE_PLANNING_TASK_PERIOD_MS);

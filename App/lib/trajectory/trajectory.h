@@ -9,7 +9,8 @@ extern "C" {
 
 #define TRAJECTORY_AXIS_COUNT              4U
 #define TRAJECTORY_COEFFICIENT_COUNT       6U
-#define TRAJECTORY_TRANSFER_SEGMENT_COUNT  2U
+#define TRAJECTORY_MAX_WAYPOINTS           6U
+#define TRAJECTORY_MAX_SEGMENTS            (TRAJECTORY_MAX_WAYPOINTS - 1U)
 
 typedef struct {
     float x_mm;
@@ -25,11 +26,15 @@ typedef struct {
     float max_yaw_acceleration_deg_s2;
 } TrajectoryLimits;
 
+/* Ordered waypoints of one phase. The end effector stops only at both ends. */
 typedef struct {
-    TrajectoryPose current;
-    TrajectoryPose pick;
-    TrajectoryPose transit;
-    TrajectoryPose place;
+    uint8_t point_count;
+    TrajectoryPose points[TRAJECTORY_MAX_WAYPOINTS];
+} TrajectoryPath;
+
+typedef struct {
+    TrajectoryPath approach;
+    TrajectoryPath transfer;
     TrajectoryLimits limits;
 } TrajectoryRequest;
 
@@ -63,10 +68,18 @@ typedef struct {
 } TrajectorySegment;
 
 typedef struct {
-    TrajectorySegment approach;
-    TrajectorySegment transfer[TRAJECTORY_TRANSFER_SEGMENT_COUNT];
-    float transfer_duration_s;
+    uint8_t segment_count;
+    TrajectorySegment segments[TRAJECTORY_MAX_SEGMENTS];
+    float duration_s;
+} TrajectoryPhasePlan;
+
+typedef struct {
+    TrajectoryPhasePlan approach;
+    TrajectoryPhasePlan transfer;
 } TrajectoryPlan;
+
+void Trajectory_PathReset(TrajectoryPath *path);
+uint8_t Trajectory_PathAppend(TrajectoryPath *path, const TrajectoryPose *pose);
 
 TrajectoryResult Trajectory_Generate(const TrajectoryRequest *request,
                                      TrajectoryPlan *plan);
