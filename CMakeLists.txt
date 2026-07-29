@@ -44,16 +44,25 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
+    App/drivers/pd42s1/pd42s1.c
     App/drivers/servo/Servo.c
+    App/lib/kalman_filter/KalmanFilter.c
+    App/lib/max485/max485.c
     App/lib/trajectory/trajectory.c
+    Task/crane_control/crane_control.c
+    Task/crane_control/crane_control_task.c
     Task/route_planning/route_planning.c
 )
 
 
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/App/drivers/pd42s1
     ${CMAKE_CURRENT_SOURCE_DIR}/App/drivers/servo
+    ${CMAKE_CURRENT_SOURCE_DIR}/App/lib/kalman_filter
+    ${CMAKE_CURRENT_SOURCE_DIR}/App/lib/max485
     ${CMAKE_CURRENT_SOURCE_DIR}/App/lib/trajectory
+    ${CMAKE_CURRENT_SOURCE_DIR}/Task/crane_control
     ${CMAKE_CURRENT_SOURCE_DIR}/Task/route_planning
 )
 

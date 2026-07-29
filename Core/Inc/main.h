@@ -57,14 +57,16 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
-#define PWM1_Pin GPIO_PIN_5
+#define RS_TX_Pin GPIO_PIN_2
+#define RS_TX_GPIO_Port GPIOA
+#define RS_RX_Pin GPIO_PIN_3
+#define RS_RX_GPIO_Port GPIOA
+#define EN485_Pin GPIO_PIN_8
+#define EN485_GPIO_Port GPIOE
+#define PWM1_Pin GPIO_PIN_13
 #define PWM1_GPIO_Port GPIOE
-#define PWM2_Pin GPIO_PIN_6
+#define PWM2_Pin GPIO_PIN_14
 #define PWM2_GPIO_Port GPIOE
-#define PWM4_Pin GPIO_PIN_14
-#define PWM4_GPIO_Port GPIOB
-#define PWM3_Pin GPIO_PIN_15
-#define PWM3_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 
