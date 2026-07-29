@@ -19,6 +19,8 @@ TRANSFER_COLOR = "#16856B"
 RISK_COLOR = "#C23B33"
 TEXT_COLOR = "#22252A"
 GRID_COLOR = "#D8DDE5"
+TIMER_INTERVAL_MS = 40
+PLAYBACK_RATE = 4.0
 
 
 def _piece_at_pose(vertices: np.ndarray, pick, pose: np.ndarray) -> np.ndarray:
@@ -44,7 +46,7 @@ class SimulationView:
 
         self._draw_result()
         self._create_controls()
-        self.timer = figure.canvas.new_timer(interval=40)
+        self.timer = figure.canvas.new_timer(interval=TIMER_INTERVAL_MS)
         self.timer.add_callback(self._on_timer)
         self.set_time(0.0)
 
@@ -327,7 +329,9 @@ class SimulationView:
     def _on_timer(self) -> None:
         if not self.playing:
             return
-        next_time = self.current_time + 0.04
+        next_time = (
+            self.current_time + TIMER_INTERVAL_MS / 1000.0 * PLAYBACK_RATE
+        )
         if next_time > self.duration_s:
             next_time = 0.0
         self.set_time(next_time)

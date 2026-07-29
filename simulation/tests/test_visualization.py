@@ -15,6 +15,22 @@ from simulation.visualization import create_figure
 
 
 class VisualizationTests(unittest.TestCase):
+    def test_timer_uses_fixed_four_times_playback(self):
+        result = run_simulation(create_scenario("fixed"))
+        figure, view = create_figure(result)
+        try:
+            view.set_time(1.0)
+            view.playing = True
+            view._on_timer()
+            self.assertAlmostEqual(1.16, view.current_time, places=6)
+
+            view.set_time(view.duration_s - 0.1)
+            view._on_timer()
+            self.assertEqual(0.0, view.current_time)
+        finally:
+            view.playing = False
+            plt.close(figure)
+
     def test_both_modes_render_nonblank_snapshots(self):
         with tempfile.TemporaryDirectory() as directory:
             for mode in ("fixed", "general"):
