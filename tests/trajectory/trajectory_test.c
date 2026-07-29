@@ -60,6 +60,49 @@ static void assert_pose_near(TrajectoryPose expected,
     ASSERT_NEAR(expected.yaw_deg, actual.yaw_deg, tolerance);
 }
 
+static float evaluate_axis_derivative(const TrajectorySegment *segment,
+                                      uint32_t axis,
+                                      float local_time_s,
+                                      uint32_t order)
+{
+    float u;
+    float value = 0.0f;
+    uint32_t coefficient_index;
+
+    ASSERT_TRUE(segment != NULL);
+    ASSERT_TRUE(axis < TRAJECTORY_AXIS_COUNT);
+    ASSERT_TRUE(order == 1U || order == 2U);
+
+    if (segment->duration_s <= 0.0f) {
+        return 0.0f;
+    }
+
+    u = local_time_s / segment->duration_s;
+    if (u < 0.0f) u = 0.0f;
+    if (u > 1.0f) u = 1.0f;
+
+    for (coefficient_index = order;
+         coefficient_index < TRAJECTORY_COEFFICIENT_COUNT;
+         ++coefficient_index) {
+        float multiplier = (float)coefficient_index;
+        uint32_t power = coefficient_index - order;
+
+        if (order == 2U) {
+            multiplier *= (float)(coefficient_index - 1U);
+        }
+
+        value += multiplier *
+                 segment->coefficient[axis][coefficient_index] *
+                 powf(u, (float)power);
+    }
+
+    if (order == 1U) {
+        return value / segment->duration_s;
+    }
+
+    return value / (segment->duration_s * segment->duration_s);
+}
+
 static void test_approach_pose_and_grip_output(void)
 {
     TrajectoryRequest request = valid_request();
@@ -119,10 +162,81 @@ static void test_invalid_request_is_rejected(void)
                   Trajectory_Generate(&request, &plan));
 }
 
+static void test_transfer_passes_transit_and_controls_grip(void)
+{
+    TrajectoryRequest request = valid_request();
+    TrajectoryPlan plan;
+    TrajectoryReference reference;
+    float transit_time;
+
+    ASSERT_EQ_INT(TRAJECTORY_RESULT_OK,
+                  Trajectory_Generate(&request, &plan));
+    transit_time = plan.transfer[0].duration_s;
+    ASSERT_TRUE(transit_time > 0.0f);
+    ASSERT_TRUE(plan.transfer_duration_s > transit_time);
+
+    ASSERT_EQ_INT(TRAJECTORY_STATE_RUNNING,
+                  Trajectory_Evaluate(&plan, TRAJECTORY_PHASE_TRANSFER,
+                                      0.0f, &reference));
+    assert_pose_near(request.pick, reference.pose, 1.0e-4f);
+    ASSERT_EQ_INT(1, reference.grip);
+
+    ASSERT_EQ_INT(TRAJECTORY_STATE_RUNNING,
+                  Trajectory_Evaluate(&plan, TRAJECTORY_PHASE_TRANSFER,
+                                      transit_time, &reference));
+    assert_pose_near(request.transit, reference.pose, 1.0e-3f);
+    ASSERT_EQ_INT(1, reference.grip);
+
+    ASSERT_EQ_INT(TRAJECTORY_STATE_COMPLETE,
+                  Trajectory_Evaluate(&plan, TRAJECTORY_PHASE_TRANSFER,
+                                      plan.transfer_duration_s, &reference));
+    assert_pose_near(request.place, reference.pose, 1.0e-3f);
+    ASSERT_EQ_INT(0, reference.grip);
+
+    ASSERT_EQ_INT(TRAJECTORY_STATE_COMPLETE,
+                  Trajectory_Evaluate(&plan, TRAJECTORY_PHASE_TRANSFER,
+                                      plan.transfer_duration_s + 1.0f,
+                                      &reference));
+    ASSERT_EQ_INT(0, reference.grip);
+}
+
+static void test_transfer_is_c2_and_does_not_stop_at_transit(void)
+{
+    TrajectoryRequest request = valid_request();
+    TrajectoryPlan plan;
+    float linear_speed_squared = 0.0f;
+    uint32_t axis;
+
+    ASSERT_EQ_INT(TRAJECTORY_RESULT_OK,
+                  Trajectory_Generate(&request, &plan));
+
+    for (axis = 0U; axis < TRAJECTORY_AXIS_COUNT; ++axis) {
+        float left_velocity = evaluate_axis_derivative(
+            &plan.transfer[0], axis, plan.transfer[0].duration_s, 1U);
+        float right_velocity = evaluate_axis_derivative(
+            &plan.transfer[1], axis, 0.0f, 1U);
+        float left_acceleration = evaluate_axis_derivative(
+            &plan.transfer[0], axis, plan.transfer[0].duration_s, 2U);
+        float right_acceleration = evaluate_axis_derivative(
+            &plan.transfer[1], axis, 0.0f, 2U);
+
+        ASSERT_NEAR(left_velocity, right_velocity, 1.0e-3f);
+        ASSERT_NEAR(left_acceleration, right_acceleration, 1.0e-2f);
+
+        if (axis < 3U) {
+            linear_speed_squared += left_velocity * left_velocity;
+        }
+    }
+
+    ASSERT_TRUE(sqrtf(linear_speed_squared) > 1.0e-3f);
+}
+
 int main(void)
 {
     test_approach_pose_and_grip_output();
     test_invalid_request_is_rejected();
+    test_transfer_passes_transit_and_controls_grip();
+    test_transfer_is_c2_and_does_not_stop_at_transit();
 
     puts("trajectory tests passed");
     return EXIT_SUCCESS;

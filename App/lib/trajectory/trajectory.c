@@ -21,6 +21,13 @@ static float max_float(float left, float right)
     return left > right ? left : right;
 }
 
+static float clamp_abs(float value, float limit)
+{
+    if (value > limit) return limit;
+    if (value < -limit) return -limit;
+    return value;
+}
+
 static float normalize_yaw(float yaw_deg)
 {
     float normalized = fmodf(yaw_deg + TRAJECTORY_YAW_HALF_PERIOD_DEG,
@@ -78,59 +85,110 @@ static void axes_to_pose(const float axes[TRAJECTORY_AXIS_COUNT], TrajectoryPose
     pose->yaw_deg = normalize_yaw(axes[TRAJECTORY_AXIS_YAW]);
 }
 
-static float approach_duration(const TrajectoryRequest *request)
+static void pose_to_unwrapped_axes(const TrajectoryPose *pose,
+                                   float previous_yaw_deg,
+                                   float axes[TRAJECTORY_AXIS_COUNT])
 {
-    float dx = request->pick.x_mm - request->current.x_mm;
-    float dy = request->pick.y_mm - request->current.y_mm;
-    float dz = request->pick.z_mm - request->current.z_mm;
+    pose_to_axes(pose, axes);
+    axes[TRAJECTORY_AXIS_YAW] =
+        previous_yaw_deg + shortest_yaw_delta(previous_yaw_deg, pose->yaw_deg);
+}
+
+static float motion_duration(const float start[TRAJECTORY_AXIS_COUNT],
+                             const float end[TRAJECTORY_AXIS_COUNT],
+                             const TrajectoryLimits *limits)
+{
+    float dx = end[TRAJECTORY_AXIS_X] - start[TRAJECTORY_AXIS_X];
+    float dy = end[TRAJECTORY_AXIS_Y] - start[TRAJECTORY_AXIS_Y];
+    float dz = end[TRAJECTORY_AXIS_Z] - start[TRAJECTORY_AXIS_Z];
     float distance = sqrtf(dx * dx + dy * dy + dz * dz);
-    float yaw_distance = fabsf(shortest_yaw_delta(request->current.yaw_deg,
-                                                  request->pick.yaw_deg));
+    float yaw_distance = fabsf(end[TRAJECTORY_AXIS_YAW] -
+                               start[TRAJECTORY_AXIS_YAW]);
     float duration = 0.0f;
 
     duration = max_float(duration,
                          TRAJECTORY_QUINTIC_MAX_VELOCITY * distance /
-                         request->limits.max_linear_velocity_mm_s);
+                         limits->max_linear_velocity_mm_s);
     duration = max_float(duration,
                          sqrtf(TRAJECTORY_QUINTIC_MAX_ACCELERATION * distance /
-                               request->limits.max_linear_acceleration_mm_s2));
+                               limits->max_linear_acceleration_mm_s2));
     duration = max_float(duration,
                          TRAJECTORY_QUINTIC_MAX_VELOCITY * yaw_distance /
-                         request->limits.max_yaw_velocity_deg_s);
+                         limits->max_yaw_velocity_deg_s);
     duration = max_float(duration,
                          sqrtf(TRAJECTORY_QUINTIC_MAX_ACCELERATION * yaw_distance /
-                               request->limits.max_yaw_acceleration_deg_s2));
+                               limits->max_yaw_acceleration_deg_s2));
 
     return duration;
 }
 
-static void generate_rest_to_rest(const TrajectoryPose *start,
-                                  const TrajectoryPose *end,
-                                  float duration_s,
-                                  TrajectorySegment *segment)
+static void generate_quintic_segment(
+    const float start[TRAJECTORY_AXIS_COUNT],
+    const float end[TRAJECTORY_AXIS_COUNT],
+    const float start_velocity[TRAJECTORY_AXIS_COUNT],
+    const float end_velocity[TRAJECTORY_AXIS_COUNT],
+    const float start_acceleration[TRAJECTORY_AXIS_COUNT],
+    const float end_acceleration[TRAJECTORY_AXIS_COUNT],
+    float duration_s,
+    TrajectorySegment *segment)
 {
-    float start_axes[TRAJECTORY_AXIS_COUNT];
-    float end_axes[TRAJECTORY_AXIS_COUNT];
     uint32_t axis;
-
-    pose_to_axes(start, start_axes);
-    pose_to_axes(end, end_axes);
-    end_axes[TRAJECTORY_AXIS_YAW] =
-        start_axes[TRAJECTORY_AXIS_YAW] +
-        shortest_yaw_delta(start_axes[TRAJECTORY_AXIS_YAW],
-                           end_axes[TRAJECTORY_AXIS_YAW]);
 
     memset(segment, 0, sizeof(*segment));
     segment->duration_s = duration_s;
 
     for (axis = 0U; axis < TRAJECTORY_AXIS_COUNT; ++axis) {
-        float delta = end_axes[axis] - start_axes[axis];
+        float duration_squared = duration_s * duration_s;
+        float c0 = start[axis];
+        float c1 = start_velocity[axis] * duration_s;
+        float c2 = 0.5f * start_acceleration[axis] * duration_squared;
+        float position_residual = end[axis] - (c0 + c1 + c2);
+        float velocity_residual = end_velocity[axis] * duration_s -
+                                  (c1 + 2.0f * c2);
+        float acceleration_residual = end_acceleration[axis] * duration_squared -
+                                      2.0f * c2;
 
-        segment->coefficient[axis][0] = start_axes[axis];
-        segment->coefficient[axis][3] = 10.0f * delta;
-        segment->coefficient[axis][4] = -15.0f * delta;
-        segment->coefficient[axis][5] = 6.0f * delta;
+        segment->coefficient[axis][0] = c0;
+        segment->coefficient[axis][1] = c1;
+        segment->coefficient[axis][2] = c2;
+        segment->coefficient[axis][3] = 10.0f * position_residual -
+                                        4.0f * velocity_residual +
+                                        0.5f * acceleration_residual;
+        segment->coefficient[axis][4] = -15.0f * position_residual +
+                                        7.0f * velocity_residual -
+                                        acceleration_residual;
+        segment->coefficient[axis][5] = 6.0f * position_residual -
+                                        3.0f * velocity_residual +
+                                        0.5f * acceleration_residual;
     }
+}
+
+static float limited_transit_velocity(float start,
+                                      float transit,
+                                      float end,
+                                      float first_duration_s,
+                                      float second_duration_s)
+{
+    float first_secant;
+    float second_secant;
+    float velocity;
+    float limit;
+
+    if (first_duration_s <= 0.0f || second_duration_s <= 0.0f) {
+        return 0.0f;
+    }
+
+    first_secant = (transit - start) / first_duration_s;
+    second_secant = (end - transit) / second_duration_s;
+
+    if (first_secant * second_secant <= 0.0f) {
+        return 0.0f;
+    }
+
+    velocity = 2.0f * first_secant * second_secant /
+               (first_secant + second_secant);
+    limit = 3.0f * fminf(fabsf(first_secant), fabsf(second_secant));
+    return clamp_abs(velocity, limit);
 }
 
 static float evaluate_polynomial(const float coefficient[TRAJECTORY_COEFFICIENT_COUNT],
@@ -172,7 +230,17 @@ static void evaluate_segment(const TrajectorySegment *segment,
 TrajectoryResult Trajectory_Generate(const TrajectoryRequest *request,
                                      TrajectoryPlan *plan)
 {
-    float duration_s;
+    float approach_start[TRAJECTORY_AXIS_COUNT];
+    float approach_end[TRAJECTORY_AXIS_COUNT];
+    float transfer_start[TRAJECTORY_AXIS_COUNT];
+    float transfer_transit[TRAJECTORY_AXIS_COUNT];
+    float transfer_end[TRAJECTORY_AXIS_COUNT];
+    float zero[TRAJECTORY_AXIS_COUNT] = {0.0f};
+    float transit_velocity[TRAJECTORY_AXIS_COUNT];
+    float approach_duration_s;
+    float first_duration_s;
+    float second_duration_s;
+    uint32_t axis;
 
     if (request == NULL || plan == NULL) {
         return TRAJECTORY_RESULT_INVALID_ARGUMENT;
@@ -191,23 +259,72 @@ TrajectoryResult Trajectory_Generate(const TrajectoryRequest *request,
     }
 
     memset(plan, 0, sizeof(*plan));
-    duration_s = approach_duration(request);
-    if (!isfinite(duration_s)) {
+    pose_to_axes(&request->current, approach_start);
+    pose_to_unwrapped_axes(&request->pick,
+                           approach_start[TRAJECTORY_AXIS_YAW],
+                           approach_end);
+    approach_duration_s = motion_duration(approach_start,
+                                          approach_end,
+                                          &request->limits);
+
+    pose_to_axes(&request->pick, transfer_start);
+    pose_to_unwrapped_axes(&request->transit,
+                           transfer_start[TRAJECTORY_AXIS_YAW],
+                           transfer_transit);
+    pose_to_unwrapped_axes(&request->place,
+                           transfer_transit[TRAJECTORY_AXIS_YAW],
+                           transfer_end);
+    first_duration_s = motion_duration(transfer_start,
+                                       transfer_transit,
+                                       &request->limits);
+    second_duration_s = motion_duration(transfer_transit,
+                                        transfer_end,
+                                        &request->limits);
+
+    if (!isfinite(approach_duration_s) ||
+        !isfinite(first_duration_s) ||
+        !isfinite(second_duration_s)) {
         return TRAJECTORY_RESULT_NUMERIC_ERROR;
     }
 
-    generate_rest_to_rest(&request->current,
-                          &request->pick,
-                          duration_s,
-                          &plan->approach);
-    generate_rest_to_rest(&request->pick,
-                          &request->transit,
-                          0.0f,
-                          &plan->transfer[0]);
-    generate_rest_to_rest(&request->transit,
-                          &request->place,
-                          0.0f,
-                          &plan->transfer[1]);
+    for (axis = 0U; axis < TRAJECTORY_AXIS_COUNT; ++axis) {
+        transit_velocity[axis] = limited_transit_velocity(
+            transfer_start[axis],
+            transfer_transit[axis],
+            transfer_end[axis],
+            first_duration_s,
+            second_duration_s);
+    }
+
+    generate_quintic_segment(approach_start,
+                              approach_end,
+                              zero,
+                              zero,
+                              zero,
+                              zero,
+                              approach_duration_s,
+                              &plan->approach);
+    generate_quintic_segment(transfer_start,
+                              transfer_transit,
+                              zero,
+                              transit_velocity,
+                              zero,
+                              zero,
+                              first_duration_s,
+                              &plan->transfer[0]);
+    generate_quintic_segment(transfer_transit,
+                              transfer_end,
+                              transit_velocity,
+                              zero,
+                              zero,
+                              zero,
+                              second_duration_s,
+                              &plan->transfer[1]);
+    plan->transfer_duration_s = first_duration_s + second_duration_s;
+
+    if (!isfinite(plan->transfer_duration_s)) {
+        return TRAJECTORY_RESULT_NUMERIC_ERROR;
+    }
 
     return TRAJECTORY_RESULT_OK;
 }
@@ -238,9 +355,31 @@ TrajectoryState Trajectory_Evaluate(const TrajectoryPlan *plan,
         return TRAJECTORY_STATE_RUNNING;
     }
 
-    evaluate_segment(&plan->transfer[1], time_s, &reference->pose);
-    reference->grip = 0U;
-    return TRAJECTORY_STATE_COMPLETE;
+    if (plan->transfer_duration_s <= 0.0f) {
+        evaluate_segment(&plan->transfer[1], 0.0f, &reference->pose);
+        reference->grip = 0U;
+        return TRAJECTORY_STATE_COMPLETE;
+    }
+
+    if (time_s >= plan->transfer_duration_s) {
+        evaluate_segment(&plan->transfer[1],
+                         plan->transfer[1].duration_s,
+                         &reference->pose);
+        reference->grip = 0U;
+        return TRAJECTORY_STATE_COMPLETE;
+    }
+
+    if (plan->transfer[0].duration_s > 0.0f &&
+        time_s < plan->transfer[0].duration_s) {
+        evaluate_segment(&plan->transfer[0], time_s, &reference->pose);
+    } else {
+        evaluate_segment(&plan->transfer[1],
+                         time_s - plan->transfer[0].duration_s,
+                         &reference->pose);
+    }
+
+    reference->grip = 1U;
+    return TRAJECTORY_STATE_RUNNING;
 }
 
 float Trajectory_GetDuration(const TrajectoryPlan *plan,
