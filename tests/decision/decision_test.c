@@ -321,6 +321,57 @@ static void test_general_permutations(void)
     verify_general_solution(SecondOrder);
 }
 
+static void test_waypoint_trajectory_interface(void)
+{
+    static const uint8_t Order[DECISION_MAX_PIECES] = {1U, 3U, 0U, 2U};
+    DecisionVisionFrame frame;
+    DecisionFixedLayout layout;
+    DecisionConfig config;
+    DecisionPlan plan;
+    DecisionPoint target_center = {105.0f, 220.0f};
+    TrajectoryPose current = {105.0f, 120.0f, 0.0f, 25.0f};
+    TrajectoryLimits limits = {120.0f, 300.0f, 90.0f, 240.0f};
+    TrajectoryRequest request;
+    TrajectoryPlan trajectory_plan;
+    const DecisionMove *move;
+
+    build_frame(Order, &frame);
+    DecisionTemplate_GetFigure2Layout(target_center, &layout);
+    Decision_GetDefaultConfig(&config);
+    ASSERT_EQ_INT(DECISION_RESULT_OK,
+                  Decision_SolveFixed(&frame, &layout, &config, &plan));
+    move = &plan.moves[0];
+
+    ASSERT_NEAR(move->pick.x_mm, move->pick_above.x_mm, 0.001f);
+    ASSERT_NEAR(move->pick.y_mm, move->pick_above.y_mm, 0.001f);
+    ASSERT_NEAR(config.transit_z_mm, move->pick_above.z_mm, 0.001f);
+    ASSERT_NEAR(0.0f, move->pick_above.yaw_deg, 0.001f);
+    ASSERT_NEAR(move->place.x_mm, move->place_above.x_mm, 0.001f);
+    ASSERT_NEAR(move->place.y_mm, move->place_above.y_mm, 0.001f);
+    ASSERT_NEAR(config.transit_z_mm, move->place_above.z_mm, 0.001f);
+    ASSERT_NEAR(move->place.yaw_deg, move->place_above.yaw_deg, 0.001f);
+
+    ASSERT_TRUE(Decision_BuildTrajectoryRequest(move,
+                                                &current,
+                                                &limits,
+                                                &request) != 0U);
+    ASSERT_EQ_INT(4, request.approach.point_count);
+    ASSERT_EQ_INT(4, request.transfer.point_count);
+    ASSERT_NEAR(current.x_mm, request.approach.points[0].x_mm, 0.001f);
+    ASSERT_NEAR(current.yaw_deg, request.approach.points[0].yaw_deg, 0.001f);
+    ASSERT_NEAR(move->pick.x_mm,
+                request.approach.points[request.approach.point_count - 1U].x_mm,
+                0.001f);
+    ASSERT_NEAR(move->place.x_mm,
+                request.transfer.points[request.transfer.point_count - 1U].x_mm,
+                0.001f);
+    ASSERT_NEAR(move->place.yaw_deg,
+                request.transfer.points[request.transfer.point_count - 1U].yaw_deg,
+                0.001f);
+    ASSERT_EQ_INT(TRAJECTORY_RESULT_OK,
+                  Trajectory_Generate(&request, &trajectory_plan));
+}
+
 static void test_failure_results(void)
 {
     static const uint8_t Order[DECISION_MAX_PIECES] = {1U, 3U, 0U, 2U};
@@ -353,6 +404,7 @@ int main(void)
 {
     test_fixed_geometry_matching();
     test_general_permutations();
+    test_waypoint_trajectory_interface();
     test_failure_results();
     puts("decision tests passed");
     return EXIT_SUCCESS;

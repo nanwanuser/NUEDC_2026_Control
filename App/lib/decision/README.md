@@ -1,7 +1,8 @@
 # 拼图决策模块
 
 模块接收视觉 JSON 解析后的 `DecisionVisionFrame`，输出每片碎片的
-`pick -> transit -> place` 三个位姿。JSON 字段与结构体的对应关系为：
+`pick`、`pick_above`、`place_above` 和 `place` 四个位姿。JSON 字段与结构体的
+对应关系为：
 
 ```text
 seq                       -> DecisionVisionFrame.seq
@@ -60,15 +61,16 @@ place.yaw_deg = 从当前碎片姿态到目标姿态所需的旋转量
 放置点已经包含非中心吸取产生的 XY 旋转补偿。执行时不能再次绕碎片中心修正
 放置坐标。
 
-目前轨迹模块只有一个中间点。决策模块将它设置为吸取点正上方：
+决策模块在吸取点和放置点正上方各生成一个安全点：
 
 ```text
-transit.x/y = pick.x/y
-transit.z   = config.transit_z_mm
+pick_above.x/y  = pick.x/y
+place_above.x/y = place.x/y
+pick_above.z    = place_above.z = config.transit_z_mm
 ```
 
-这会优先完成抬升，再转移到放置点。若后续要求“放置点上方再垂直下降”，需要
-把轨迹模块扩展为两个安全路径点。
+末端先垂直抬升，再在安全高度平移并完成相对旋转，最后从 `place_above` 垂直下降，
+避免纸片贴近桌面横移或旋转。
 
 ## 调用示例
 
@@ -95,7 +97,8 @@ DecisionTask_Submit(&request);
 `TrajectoryRequest` 并依次提交给 `RoutePlanning`：
 
 ```text
-current -> pick -> 等待吸附 -> transit -> place -> 等待释放 -> 下一片
+current -> current_above -> pick_above -> pick -> 等待吸附
+pick -> pick_above -> place_above -> place -> 等待释放 -> 下一片
 ```
 
 第一片的 `current` 使用 `request.execution.current_pose`，后续碎片自动使用上一片
@@ -104,4 +107,5 @@ current -> pick -> 等待吸附 -> transit -> place -> 等待释放 -> 下一片
 `DecisionTask_Output.trajectory_result` 查看。
 
 当前执行机构按电磁铁吸取纸片设计，吸附和释放使用定时等待，不依赖夹爪动作或
-夹爪反馈。本次算法模块没有新增电机、电磁铁或其他硬件驱动。
+夹爪反馈。轨迹的 `grip` 状态由 `CraneControl_SetMagnet()` 映射到电磁铁；该函数
+当前是弱硬件钩子，分配 GPIO 后再提供强实现。

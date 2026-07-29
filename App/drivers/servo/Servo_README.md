@@ -1,131 +1,62 @@
-# Servo 驱动使用说明
+# MG996R 双舵机驱动
 
-本目录提供基于 STM32 HAL 的舵机 PWM 驱动，支持直接设置角度，也支持一阶滤波平滑转动。
+## 硬件配置
 
-## 文件说明
+| 用途 | 外设/引脚 |
+| --- | --- |
+| 舵机1，吊臂升降 | TIM1_CH3，PE13，`PWM1` |
+| 舵机2，末端电磁铁 Yaw | TIM1_CH4，PE14，`PWM2` |
+| PWM 频率 | 50 Hz |
+| TIM1 输入时钟 | 168 MHz |
+| PSC / ARR | 167 / 19999 |
+| 计数频率 | 1 MHz，即 1 count/us |
+| 目标脉宽 | 500~2500 us |
+| 软件角度范围 | 0~180°，分辨率 0.1° |
 
-- `Servo.h`：对外接口、舵机参数和定时器通道配置
-- `Servo.c`：角度到 PWM 脉宽的转换、直接控制、平滑运动控制
+TIM1 的 20 ms 周期对应 MG996R 的 50 Hz 控制周期。默认脉宽端点用于覆盖
+0~180°目标范围，首次装机必须脱离负载并逐步校准，避免舵机或齿轮顶死。
 
-## 当前硬件配置
+## 初始化和调用
 
-当前驱动默认使用：
-
-- 定时器：`TIM1`
-- 通道：`TIM_CHANNEL_1`
-- 输出引脚：`PE9`
-- PWM 周期：20 ms，适合常见 50 Hz 舵机
-- 脉宽范围：`500` 到 `2500`
-- 角度范围：`0.0f` 到 `180.0f`
-
-这些配置在 `Servo.h` 中定义：
-
-```c
-#define SERVO_TIM_HANDLE      &htim1
-#define SERVO_TIM_CHANNEL     TIM_CHANNEL_1
-#define SERVO_MIN_ANGLE       0.0f
-#define SERVO_MAX_ANGLE       180.0f
-#define SERVO_MIN_PULSE       500
-#define SERVO_MAX_PULSE       2500
-```
-
-如果更换舵机输出通道，需要同步修改 `SERVO_TIM_HANDLE`、`SERVO_TIM_CHANNEL`，并在 CubeMX 中配置对应的 PWM 引脚。
-
-## 初始化要求
-
-使用前需要先完成 HAL、时钟、GPIO 和 TIM 初始化，然后调用 `Servo_Init()`。
-
-典型顺序：
+必须先完成 `MX_TIM1_Init()`，再初始化驱动：
 
 ```c
-HAL_Init();
-SystemClock_Config();
-MX_GPIO_Init();
-MX_TIM1_Init();
-
-Servo_Init();
-```
-
-`Servo_Init()` 会完成以下工作：
-
-- 初始化全局舵机状态 `g_servo`
-- 将舵机输出设置到初始角度 `0.0f`
-- 启动 `TIM1 CH1` 的 PWM 输出
-
-## 常用接口
-
-### `Servo_SetAngle_Direct(float angle)`
-
-立即设置舵机角度。
-
-```c
-Servo_SetAngle_Direct(90.0f);
-```
-
-角度会被限制在 `SERVO_MIN_ANGLE` 到 `SERVO_MAX_ANGLE` 之间。
-
-### `Servo_SetAngle_Smooth(float target_angle, float max_speed, float accel)`
-
-设置目标角度，并按最大速度和加速度参数平滑运动。
-
-```c
-Servo_SetAngle_Smooth(180.0f, 60.0f, 120.0f);
-```
-
-参数含义：
-
-- `target_angle`：目标角度，单位为度
-- `max_speed`：最大速度，单位为度/秒
-- `accel`：参考加速度，单位为度/秒^2
-
-如果 `max_speed <= 0`，函数会退化为直接设置角度。
-
-### `Servo_Loop_Process(void)`
-
-平滑运动处理函数，需要高频调用。
-
-```c
-while (1)
-{
-    Servo_Loop_Process();
+if (Servo_Init() != HAL_OK) {
+    Error_Handler();
 }
 ```
 
-如果调用 `Servo_SetAngle_Smooth()` 后没有持续调用 `Servo_Loop_Process()`，舵机不会继续平滑移动到目标位置。
-
-### `Servo_Stop(void)`
-
-停止当前平滑运动，并将目标角度设置为当前角度。
+初始化后两个通道均输出逻辑中心角 90°。设置目标后，以固定 5~10 ms 周期调用
+`Servo_Update()`，驱动会依次执行一阶低通、卡尔曼滤波、0.1°量化和 CCR 更新。
 
 ```c
-Servo_Stop();
-```
+Servo_SetAngle(SERVO_LIFT, 120.0f);
+Servo_SetAngle(SERVO_END_YAW, 70.0f);
 
-## 使用示例
-
-直接转到 90 度：
-
-```c
-Servo_Init();
-Servo_SetAngle_Direct(90.0f);
-```
-
-平滑转到 180 度：
-
-```c
-Servo_Init();
-Servo_SetAngle_Smooth(180.0f, 50.0f, 100.0f);
-
-while (1)
-{
-    Servo_Loop_Process();
+for (;;) {
+    Servo_Update();
+    osDelay(10);
 }
 ```
+
+`Servo_Stop()` 只冻结当前软件角并继续输出 PWM 保持位置，不会切断舵机电源。
+
+## 安装校准
+
+方向和机械零位配置集中在 `Servo.h`：
+
+```c
+#define SERVO_LIFT_REVERSED          0U
+#define SERVO_END_YAW_REVERSED       0U
+#define SERVO_LIFT_ZERO_TRIM_DEG     (0.0f)
+#define SERVO_END_YAW_ZERO_TRIM_DEG  (0.0f)
+```
+
+装配后只调整这些宏，不要在上层控制逻辑中重复反向或叠加零位补偿。
 
 ## 注意事项
 
-- 舵机供电电流通常较大，建议使用独立 5 V 电源，并与 STM32 共地。
-- 当前 `TIM1 CH1` 也可能被其他驱动占用，使用前请确认没有多个模块同时控制同一个 PWM 通道。
-- `SERVO_MIN_PULSE` 和 `SERVO_MAX_PULSE` 需要根据实际舵机调整。常见范围是 500 us 到 2500 us，也有舵机使用 1000 us 到 2000 us。
-- 平滑运动依赖 `HAL_GetTick()`，系统 tick 必须正常工作。
-- `Servo_Loop_Process()` 可以放在主循环中，也可以放在固定周期任务中；调用越稳定，运动越平滑。
+- MG996R 使用独立、足够电流的电源，舵机电源地必须与 MCU 共地。
+- 升降齿轮齿条不自锁，断电防坠必须由机械结构保证。
+- 本驱动没有位置反馈，`current_angle_deg` 是 PWM 指令角，不是实测角。
+- 多任务同时控制舵机时，由上层提供互斥保护。

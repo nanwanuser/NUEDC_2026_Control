@@ -61,7 +61,9 @@ class SimulationView:
         slider_ax = self.figure.add_axes((0.37, 0.082, 0.57, 0.028))
 
         active = 0 if self.result.scenario.name == "fixed" else 1
-        self.mode_radio = RadioButtons(radio_ax, ("Fixed ID", "General"), active=active)
+        self.mode_radio = RadioButtons(
+            radio_ax, ("Fixed Template", "General"), active=active
+        )
         self.play_button = Button(play_ax, "Play")
         self.reset_button = Button(reset_ax, "Reset")
         self.time_slider = Slider(
@@ -152,8 +154,8 @@ class SimulationView:
             axis.add_patch(patch)
             self._piece_patches[piece_id] = patch
             axis.scatter(
-                execution.request.pick.x_mm,
-                execution.request.pick.y_mm,
+                execution.move.pick.x_mm,
+                execution.move.pick.y_mm,
                 marker="x",
                 s=36,
                 linewidth=1.4,
@@ -215,13 +217,24 @@ class SimulationView:
                     alpha=0.75,
                 )
 
-            request = execution.request
+            # Mark the two endpoints plus the cruise-height lift poses, which is
+            # what makes the "above both ends" shape visible.
+            move = execution.move
             axis.scatter(
-                [request.pick.x_mm, request.transit.x_mm, request.place.x_mm],
-                [request.pick.y_mm, request.transit.y_mm, request.place.y_mm],
-                [request.pick.z_mm, request.transit.z_mm, request.place.z_mm],
-                s=(18, 22, 18),
-                color=(APPROACH_COLOR, "#7B61A8", TRANSFER_COLOR),
+                [move.pick.x_mm, move.place.x_mm],
+                [move.pick.y_mm, move.place.y_mm],
+                [move.pick.z_mm, move.place.z_mm],
+                s=18,
+                color=(APPROACH_COLOR, TRANSFER_COLOR),
+                depthshade=False,
+            )
+            axis.scatter(
+                [move.pick_above.x_mm, move.place_above.x_mm],
+                [move.pick_above.y_mm, move.place_above.y_mm],
+                [move.pick_above.z_mm, move.place_above.z_mm],
+                s=22,
+                marker="^",
+                color="#7B61A8",
                 depthshade=False,
             )
 
@@ -323,7 +336,7 @@ class SimulationView:
             self.set_time(float(value), update_slider=False)
 
     def _on_mode_selected(self, label: str) -> None:
-        mode = "fixed" if label == "Fixed ID" else "general"
+        mode = "fixed" if label == "Fixed Template" else "general"
         self.set_mode(mode)
 
     def _on_timer(self) -> None:
@@ -382,7 +395,7 @@ class SimulationView:
             elif sample.grip == 1:
                 polygon = _piece_at_pose(
                     self.result.initial_polygons[piece_id],
-                    execution.request.pick,
+                    execution.move.pick,
                     sample.pose,
                 )
             else:

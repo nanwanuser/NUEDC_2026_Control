@@ -12,7 +12,9 @@ from simulation.bindings import (
     TRAJECTORY_PHASE_TRANSFER,
     TRAJECTORY_RESULT_OK,
     TRAJECTORY_STATE_COMPLETE,
+    DecisionMove,
     DecisionPlan,
+    TrajectoryPhasePlan,
     TrajectoryPlan,
     TrajectoryPose,
     TrajectoryReference,
@@ -43,6 +45,7 @@ class TrajectorySample:
 class MoveExecution:
     move_index: int
     piece_id: int
+    move: DecisionMove
     request: TrajectoryRequest
     plan: TrajectoryPlan
     start_time_s: float
@@ -148,16 +151,35 @@ def _evaluate_reference(
     return reference, state
 
 
+def phase_boundary_times(phase_plan: TrajectoryPhasePlan) -> tuple[float, ...]:
+    """Cumulative end time of every segment but the last."""
+
+    boundaries: list[float] = []
+    elapsed = 0.0
+    for index in range(int(phase_plan.segment_count) - 1):
+        elapsed += float(phase_plan.segments[index].duration_s)
+        boundaries.append(elapsed)
+    return tuple(boundaries)
+
+
 def _phase_kinematics(
     plan: TrajectoryPlan, phase: int, time_s: float
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    if phase == TRAJECTORY_PHASE_APPROACH:
-        return segment_kinematics(plan.approach, time_s)
+    phase_plan = plan.approach if phase == TRAJECTORY_PHASE_APPROACH else plan.transfer
+    segment_count = int(phase_plan.segment_count)
+    if segment_count == 0:
+        zero = np.zeros(4, dtype=float)
+        return zero, zero.copy(), zero.copy()
 
-    first_duration = float(plan.transfer[0].duration_s)
-    if first_duration > 0.0 and time_s < first_duration:
-        return segment_kinematics(plan.transfer[0], time_s)
-    return segment_kinematics(plan.transfer[1], time_s - first_duration)
+    # Walk the chain the way the firmware does: the last segment absorbs any
+    # overflow so a time past the end clamps to the final pose.
+    remaining = time_s
+    for index in range(segment_count):
+        segment = phase_plan.segments[index]
+        if remaining < float(segment.duration_s) or index + 1 == segment_count:
+            return segment_kinematics(segment, remaining)
+        remaining -= float(segment.duration_s)
+    raise AssertionError("unreachable")
 
 
 def _make_sample(
@@ -231,13 +253,18 @@ def run_simulation(
     for move_index in range(decision_plan.move_count):
         move = decision_plan.moves[move_index]
         piece_id = int(move.piece_id)
-        request = TrajectoryRequest(
-            _copy_pose(current),
-            _copy_pose(move.pick),
-            _copy_pose(move.transit),
-            _copy_pose(move.place),
-            scenario.limits,
-        )
+        # Build the waypoint chains with the firmware itself, so the simulation
+        # cannot drift from the paths the STM32 will actually follow.
+        request = TrajectoryRequest()
+        if not library.Decision_BuildTrajectoryRequest(
+            ctypes.byref(move),
+            ctypes.byref(current),
+            ctypes.byref(scenario.limits),
+            ctypes.byref(request),
+        ):
+            raise RuntimeError(
+                f"Decision_BuildTrajectoryRequest failed for piece {piece_id}"
+            )
         plan = TrajectoryPlan()
         result = library.Trajectory_Generate(ctypes.byref(request), ctypes.byref(plan))
         if result != TRAJECTORY_RESULT_OK:
@@ -246,16 +273,23 @@ def run_simulation(
             )
 
         approach_duration = float(plan.approach.duration_s)
-        horizontal_distance = float(
-            np.linalg.norm(pose_array(request.pick)[:2] - pose_array(request.current)[:2])
-        )
-        low_height_risk = (
-            horizontal_distance > 1.0
-            and max(request.current.z_mm, request.pick.z_mm)
-            <= 0.25 * scenario.config.transit_z_mm
-        )
+        # Flag a leg that travels any distance while staying near the board.
+        cruise_z = max(0.25 * scenario.config.transit_z_mm, 1e-6)
+        low_height_risk = False
+        for index in range(int(request.approach.point_count) - 1):
+            start = request.approach.points[index]
+            end = request.approach.points[index + 1]
+            travel = float(
+                np.linalg.norm(pose_array(start)[:2] - pose_array(end)[:2])
+            )
+            if travel > 1.0 and max(start.z_mm, end.z_mm) <= cruise_z:
+                low_height_risk = True
+                break
         move_start = global_time
-        for local_time in _sample_times(approach_duration, sample_period_s):
+        approach_times = _sample_times(
+            approach_duration, sample_period_s, phase_boundary_times(plan.approach)
+        )
+        for local_time in approach_times:
             samples.append(
                 _make_sample(
                     global_time_s=move_start + float(local_time),
@@ -274,7 +308,7 @@ def run_simulation(
             samples.append(
                 TrajectorySample(
                     time_s=approach_end + float(hold_time),
-                    pose=pose_array(request.pick),
+                    pose=pose_array(move.pick),
                     grip=1,
                     move_index=move_index,
                     piece_id=piece_id,
@@ -289,10 +323,13 @@ def run_simulation(
             )
 
         hold_end = approach_end + pick_hold_s
-        first_transfer_duration = float(plan.transfer[0].duration_s)
-        transfer_duration = float(plan.transfer_duration_s)
+        transfer_boundaries = phase_boundary_times(plan.transfer)
+        first_transfer_duration = (
+            transfer_boundaries[0] if transfer_boundaries else 0.0
+        )
+        transfer_duration = float(plan.transfer.duration_s)
         transfer_times = _sample_times(
-            transfer_duration, sample_period_s, (first_transfer_duration,)
+            transfer_duration, sample_period_s, transfer_boundaries
         )
         for local_time in transfer_times:
             samples.append(
@@ -311,13 +348,14 @@ def run_simulation(
         move_end = hold_end + transfer_duration
         piece = pieces_by_id[piece_id]
         final_polygon = transform_polygon(
-            piece.vertices[: piece.vertex_count], request.pick, request.place
+            piece.vertices[: piece.vertex_count], move.pick, move.place
         )
         final_polygons[piece_id] = final_polygon
         moves.append(
             MoveExecution(
                 move_index=move_index,
                 piece_id=piece_id,
+                move=move,
                 request=request,
                 plan=plan,
                 start_time_s=move_start,
@@ -328,7 +366,7 @@ def run_simulation(
                 final_polygon=final_polygon,
             )
         )
-        current = _copy_pose(request.place)
+        current = _copy_pose(move.place)
         global_time = move_end
 
     return SimulationResult(

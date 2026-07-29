@@ -12,6 +12,8 @@
 #define DECISION_MAX_EDGE_EVENTS       (DECISION_MAX_PIECES * DECISION_MAX_VERTICES)
 #define DECISION_MAX_CONTACT_INTERVALS (DECISION_MAX_EDGE_EVENTS - 1U)
 #define DECISION_MAX_POSE_KEYS         96U
+#define DECISION_WAYPOINT_EPSILON_MM   0.1f
+#define DECISION_WAYPOINT_EPSILON_DEG  0.1f
 
 typedef struct {
     float cosine;
@@ -528,22 +530,29 @@ static void fill_move(const DecisionPiece *piece,
                       const DecisionConfig *config,
                       DecisionMove *move)
 {
+    const float target_yaw_deg = normalize_degrees(rotation_deg);
+
     move->piece_id = piece->id;
     move->pick.x_mm = grasp.x_mm;
     move->pick.y_mm = grasp.y_mm;
     move->pick.z_mm = config->pick_z_mm;
     move->pick.yaw_deg = 0.0f;
 
-    /* One high point is currently available: lift at the pickup XY first. */
-    move->transit.x_mm = grasp.x_mm;
-    move->transit.y_mm = grasp.y_mm;
-    move->transit.z_mm = config->transit_z_mm;
-    move->transit.yaw_deg = normalize_degrees(rotation_deg);
+    /* Lift straight up before travelling, and rotate the piece while high. */
+    move->pick_above.x_mm = grasp.x_mm;
+    move->pick_above.y_mm = grasp.y_mm;
+    move->pick_above.z_mm = config->transit_z_mm;
+    move->pick_above.yaw_deg = 0.0f;
+
+    move->place_above.x_mm = place.x_mm;
+    move->place_above.y_mm = place.y_mm;
+    move->place_above.z_mm = config->transit_z_mm;
+    move->place_above.yaw_deg = target_yaw_deg;
 
     move->place.x_mm = place.x_mm;
     move->place.y_mm = place.y_mm;
     move->place.z_mm = config->place_z_mm;
-    move->place.yaw_deg = normalize_degrees(rotation_deg);
+    move->place.yaw_deg = target_yaw_deg;
 }
 
 static float orientation(DecisionPoint start,
@@ -1683,19 +1692,65 @@ DecisionResult Decision_Solve(DecisionMode mode,
     return DECISION_RESULT_INVALID_ARGUMENT;
 }
 
+/* Coincident waypoints would insert a needless full stop, so drop them. */
+static uint8_t append_distinct_waypoint(TrajectoryPath *path,
+                                        const TrajectoryPose *pose)
+{
+    if (path->point_count > 0U) {
+        const TrajectoryPose *last = &path->points[path->point_count - 1U];
+
+        if (fabsf(pose->x_mm - last->x_mm) <= DECISION_WAYPOINT_EPSILON_MM &&
+            fabsf(pose->y_mm - last->y_mm) <= DECISION_WAYPOINT_EPSILON_MM &&
+            fabsf(pose->z_mm - last->z_mm) <= DECISION_WAYPOINT_EPSILON_MM &&
+            fabsf(normalize_degrees(pose->yaw_deg - last->yaw_deg)) <=
+                DECISION_WAYPOINT_EPSILON_DEG) {
+            path->points[path->point_count - 1U] = *pose;
+            return 1U;
+        }
+    }
+    return Trajectory_PathAppend(path, pose);
+}
+
 uint8_t Decision_BuildTrajectoryRequest(const DecisionMove *move,
                                         const TrajectoryPose *current,
                                         const TrajectoryLimits *limits,
                                         TrajectoryRequest *request)
 {
+    TrajectoryPose current_above;
+
     if (move == NULL || current == NULL || limits == NULL || request == NULL) {
         return 0U;
     }
+    if (!isfinite(current->x_mm) || !isfinite(current->y_mm) ||
+        !isfinite(current->z_mm) || !isfinite(current->yaw_deg)) {
+        return 0U;
+    }
 
-    request->current = *current;
-    request->pick = move->pick;
-    request->transit = move->transit;
-    request->place = move->place;
+    /* Rise straight up first, keeping yaw, so the tool cannot sweep the board.
+       The wrist then turns back to the pick angle during the high cruise. */
+    current_above = *current;
+    if (current_above.z_mm < move->pick_above.z_mm) {
+        current_above.z_mm = move->pick_above.z_mm;
+    }
+
+    Trajectory_PathReset(&request->approach);
+    if (append_distinct_waypoint(&request->approach, current) == 0U ||
+        append_distinct_waypoint(&request->approach, &current_above) == 0U ||
+        append_distinct_waypoint(&request->approach, &move->pick_above) == 0U ||
+        append_distinct_waypoint(&request->approach, &move->pick) == 0U ||
+        request->approach.point_count < 2U) {
+        return 0U;
+    }
+
+    Trajectory_PathReset(&request->transfer);
+    if (append_distinct_waypoint(&request->transfer, &move->pick) == 0U ||
+        append_distinct_waypoint(&request->transfer, &move->pick_above) == 0U ||
+        append_distinct_waypoint(&request->transfer, &move->place_above) == 0U ||
+        append_distinct_waypoint(&request->transfer, &move->place) == 0U ||
+        request->transfer.point_count < 2U) {
+        return 0U;
+    }
+
     request->limits = *limits;
     return 1U;
 }

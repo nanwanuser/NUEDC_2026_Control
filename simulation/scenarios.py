@@ -107,7 +107,7 @@ def _build_fixed_layout() -> tuple[DecisionFixedLayout, dict[int, np.ndarray]]:
 
 
 def create_scenario(mode: str) -> Scenario:
-    """Create a fixed-ID or general-mode built-in scene."""
+    """Create a fixed-template or general-mode built-in scene."""
 
     if mode not in ("fixed", "general"):
         raise ValueError(f"Unsupported simulation mode: {mode}")

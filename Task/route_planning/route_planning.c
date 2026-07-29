@@ -156,7 +156,7 @@ void Route_planning_App(void *argument)
                 output.state = TRAJECTORY_STATE_RUNNING;
                 output.result = result;
                 output.elapsed_s = 0.0f;
-                output.reference.pose = request.trajectory.current;
+                output.reference.pose = request.trajectory.approach.points[0];
                 output.reference.grip = 0U;
                 output.active = 1U;
                 publish_output(&output);
