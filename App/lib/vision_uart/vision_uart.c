@@ -10,7 +10,7 @@
 
 #include <string.h>
 
-#define VISION_UART_TASK_PERIOD_MS       1U
+#define VISION_UART_POLL_PERIOD_MS       1U
 #define VISION_UART_FRAME_TIMEOUT_MS     50U
 #define VISION_UART_TX_TIMEOUT_MS        20U
 #define VISION_UART_RX_CHUNK_SIZE        VISION_PROTOCOL_MAX_FRAME_LENGTH
@@ -50,14 +50,16 @@ static uint8_t ring_pop(uint8_t *byte)
     return 1U;
 }
 
-static void start_receive(void)
+static uint8_t start_receive(void)
 {
     VisionUart_Receiving = 1U;
     if (HAL_UARTEx_ReceiveToIdle_IT(&huart1,
                                    VisionUart_RxChunk,
                                    VISION_UART_RX_CHUNK_SIZE) != HAL_OK) {
         VisionUart_Receiving = 0U;
+        return 0U;
     }
+    return 1U;
 }
 
 static void stop_receive(void)
@@ -137,7 +139,7 @@ void VisionUart_GetOutput(VisionUartOutput *output)
     taskEXIT_CRITICAL();
 }
 
-void VisionUart_App(void *argument)
+uint8_t VisionUart_ReceiveAndSubmit(void)
 {
     VisionProtocolParser parser;
     VisionProtocolStabilizer stabilizer;
@@ -145,17 +147,28 @@ void VisionUart_App(void *argument)
     VisionProtocolPacket stable_packet;
     VisionUartOutput output;
     uint32_t last_byte_tick;
-    uint8_t submitted = 0U;
 
-    (void)argument;
+    if (huart1.gState == HAL_UART_STATE_RESET) {
+        MX_USART1_UART_Init();
+    }
+
+    taskENTER_CRITICAL();
+    VisionUart_RxHead = 0U;
+    VisionUart_RxTail = 0U;
+    VisionUart_RxOverflow = 0U;
+    VisionUart_DroppedBytes = 0U;
+    taskEXIT_CRITICAL();
+
     VisionProtocolParser_Init(&parser);
     VisionProtocolStabilizer_Init(&stabilizer);
-    VisionUart_GetOutput(&output);
+    (void)memset(&output, 0, sizeof(output));
     last_byte_tick = osKernelGetTickCount();
-    start_receive();
-    output.state = VisionUart_Receiving != 0U
-        ? VISION_UART_STATE_RECEIVING
-        : VISION_UART_STATE_ERROR;
+    if (start_receive() == 0U) {
+        output.state = VISION_UART_STATE_ERROR;
+        publish_output(&output);
+        return 0U;
+    }
+    output.state = VISION_UART_STATE_RECEIVING;
     publish_output(&output);
 
     for (;;) {
@@ -174,7 +187,7 @@ void VisionUart_App(void *argument)
             publish_output(&output);
         }
 
-        while (submitted == 0U && ring_pop(&byte) != 0U) {
+        while (ring_pop(&byte) != 0U) {
             VisionProtocolResult result;
 
             last_byte_tick = osKernelGetTickCount();
@@ -201,20 +214,22 @@ void VisionUart_App(void *argument)
                     output.state = VISION_UART_STATE_STABLE;
                     publish_output(&output);
 
-                    stop_receive();
-                    send_ack(packet.seq, VISION_PROTOCOL_ACK_ACCEPTED);
-                    (void)HAL_UART_DeInit(&huart1);
-
                     DecisionTask_GetDefaultRequest(&request);
                     request.mode = stable_packet.mode;
                     request.vision = stable_packet.frame;
                     request.fixed_layout = VisionUart_FixedLayout;
+                    stop_receive();
                     if (DecisionTask_Submit(&request) != 0U) {
                         output.state = VISION_UART_STATE_SUBMITTED;
+                        send_ack(packet.seq, VISION_PROTOCOL_ACK_ACCEPTED);
                     } else {
                         output.state = VISION_UART_STATE_ERROR;
+                        send_ack(packet.seq, VISION_PROTOCOL_ACK_INVALID);
                     }
-                    submitted = 1U;
+                    (void)HAL_UART_DeInit(&huart1);
+                    publish_output(&output);
+                    return (uint8_t)(output.state ==
+                                     VISION_UART_STATE_SUBMITTED);
                 } else {
                     output.stable_count = stabilizer.stable_count;
                     send_ack(packet.seq, VISION_PROTOCOL_ACK_OK);
@@ -228,8 +243,7 @@ void VisionUart_App(void *argument)
             }
         }
 
-        if (submitted == 0U &&
-            VisionProtocolParser_HasPartialFrame(&parser) != 0U &&
+        if (VisionProtocolParser_HasPartialFrame(&parser) != 0U &&
             (osKernelGetTickCount() - last_byte_tick) >=
                 pdMS_TO_TICKS(VISION_UART_FRAME_TIMEOUT_MS)) {
             VisionProtocolParser_Reset(&parser);
@@ -239,7 +253,13 @@ void VisionUart_App(void *argument)
             publish_output(&output);
         }
 
-        osDelay(VISION_UART_TASK_PERIOD_MS);
+        if (VisionUart_Receiving == 0U) {
+            output.state = VISION_UART_STATE_ERROR;
+            publish_output(&output);
+            return 0U;
+        }
+
+        osDelay(VISION_UART_POLL_PERIOD_MS);
     }
 }
 

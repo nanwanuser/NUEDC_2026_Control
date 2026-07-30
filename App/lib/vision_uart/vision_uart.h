@@ -29,7 +29,7 @@ typedef struct {
 void VisionUart_Init(void);
 uint8_t VisionUart_SetFixedLayout(const DecisionFixedLayout *layout);
 void VisionUart_GetOutput(VisionUartOutput *output);
-void VisionUart_App(void *argument);
+uint8_t VisionUart_ReceiveAndSubmit(void);
 
 #ifdef __cplusplus
 }

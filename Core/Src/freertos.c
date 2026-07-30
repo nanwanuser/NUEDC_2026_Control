@@ -46,18 +46,13 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
-osThreadId_t Vision_uartHandle;
-const osThreadAttr_t Vision_uart_attributes = {
-  .name = "Vision_uart",
-  .stack_size = 768 * 4,
-  .priority = (osPriority_t) osPriorityNormal,
-};
+
 /* USER CODE END Variables */
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
-  .stack_size = 128 * 4,
+  .stack_size = 1024 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
 /* Definitions for Robot_arm_ctrl */
@@ -84,7 +79,7 @@ const osThreadAttr_t Route_planning_attributes = {
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
-void VisionUart_App(void *argument);
+
 /* USER CODE END FunctionPrototypes */
 
 void StartDefaultTask(void *argument);
@@ -136,7 +131,7 @@ void MX_FREERTOS_Init(void) {
   Route_planningHandle = osThreadNew(Route_planning_App, NULL, &Route_planning_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
-  Vision_uartHandle = osThreadNew(VisionUart_App, NULL, &Vision_uart_attributes);
+  /* add threads, ... */
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
@@ -156,6 +151,8 @@ void StartDefaultTask(void *argument)
 {
   /* USER CODE BEGIN StartDefaultTask */
   (void)argument;
+
+  (void)VisionUart_ReceiveAndSubmit();
 
   /* Infinite loop */
   for(;;)

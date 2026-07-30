@@ -59,5 +59,6 @@ STM32连续收到3个相近的有效帧才提交决策。模式、碎片数量�
 起点循环变化和顺逆时针变化。最终坐标取3帧平均值。
 
 确认后STM32发送状态1的ACK，停止USART1接收、反初始化USART1，并调用
-`DecisionTask_Submit()`。固定ID模式使用前，应用必须在视觉任务启动前调用
+`DecisionTask_Submit()`。视觉接收没有独立FreeRTOS任务，系统在每次作业开始时调用
+一次`VisionUart_ReceiveAndSubmit()`，函数提交决策后返回。固定ID模式使用前必须调用
 `VisionUart_SetFixedLayout()`配置目标模板；通用模式不需要模板。
