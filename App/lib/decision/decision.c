@@ -116,6 +116,8 @@ static uint8_t config_is_valid(const DecisionConfig *config)
 {
     return (uint8_t)(config != NULL &&
                      point_is_finite(config->target_center) &&
+                     isfinite(config->paper_divider_x_mm) &&
+                     config->paper_divider_x_mm >= 0.0f &&
                      isfinite(config->pick_z_mm) &&
                      isfinite(config->transit_z_mm) &&
                      isfinite(config->place_z_mm) &&
@@ -814,6 +816,7 @@ void Decision_GetDefaultConfig(DecisionConfig *config)
 
     config->target_center.x_mm = 105.0f;
     config->target_center.y_mm = 220.0f;
+    config->paper_divider_x_mm = DECISION_PAPER_DIVIDER_X_MM;
     config->pick_z_mm = 0.0f;
     config->transit_z_mm = 40.0f;
     config->place_z_mm = 0.0f;
@@ -834,6 +837,7 @@ DecisionResult Decision_SolveGeneral(const DecisionVisionFrame *frame,
     GeneralSearch search;
     RigidTransform transforms[DECISION_MAX_PIECES];
     uint8_t used_edges[DECISION_MAX_PIECES] = {0U};
+    DecisionPoint target_center;
     float rectangle_center_x;
     float rectangle_center_y;
     float rectangle_cosine;
@@ -872,6 +876,28 @@ DecisionResult Decision_SolveGeneral(const DecisionVisionFrame *frame,
     rectangle_center_y = 0.5f * (search.best_min_y + search.best_max_y);
     rectangle_cosine = cosf(search.best_rect_angle_rad);
     rectangle_sine = sinf(search.best_rect_angle_rad);
+    target_center = config->target_center;
+    /* Put the rectangle in the half the pieces did not come from. The caller
+       states one target, on one side of the divider; if the pieces turn out to
+       lie on that same side, mirror the target across the divider instead of
+       assembling on top of them. Which half the pieces occupy is a property of
+       the calibration's choice of origin corner, not of the mechanism, so
+       reading it off the frame is what keeps the two ends from having to
+       agree. */
+    if (config->paper_divider_x_mm > 0.0f) {
+        float piece_x_sum = 0.0f;
+
+        for (piece_index = 0U; piece_index < search.piece_count;
+             ++piece_index) {
+            piece_x_sum += frame->pieces[piece_index].center.x_mm;
+        }
+        if ((piece_x_sum / (float)search.piece_count >
+                 config->paper_divider_x_mm) ==
+            (target_center.x_mm > config->paper_divider_x_mm)) {
+            target_center.x_mm = 2.0f * config->paper_divider_x_mm -
+                                 target_center.x_mm;
+        }
+    }
 
     (void)memset(plan, 0, sizeof(*plan));
     plan->seq = frame->seq;
@@ -884,10 +910,10 @@ DecisionResult Decision_SolveGeneral(const DecisionVisionFrame *frame,
                                     search.best_transforms[piece_index].cosine) -
                              search.best_rect_angle_rad;
 
-        place.x_mm = config->target_center.x_mm +
+        place.x_mm = target_center.x_mm +
             rectangle_cosine * layout_grasp.x_mm +
             rectangle_sine * layout_grasp.y_mm - rectangle_center_x;
-        place.y_mm = config->target_center.y_mm -
+        place.y_mm = target_center.y_mm -
             rectangle_sine * layout_grasp.x_mm +
             rectangle_cosine * layout_grasp.y_mm - rectangle_center_y;
 

@@ -31,15 +31,32 @@
 #define MISSION_DIAG_BEEP_MS        100U
 #define MISSION_DIAG_BEEP_GAP_MS    200U
 
-/* The crane's frame is the authority on where things are: its origin sits at the
-   column, and the boom's zero heading points away from it. Rather than restate
-   the sheet's placement here, the target is derived from the reach the crane
-   actually has, so it is inside the workspace by construction.
+/* Where the assembled rectangle goes.
+ *
+ * The task fixes this rather than leaving it free: the pieces are laid out in one
+ * half of the A4 sheet and have to be assembled in the other. So the target has
+ * to be stated in the sheet's own coordinates, which are the world coordinates
+ * every layer shares - long edge along x (0..297), short edge along y (0..210),
+ * with the column standing off the y = 0 long edge at x = 148.5. Deriving it from
+ * the reach band instead put it at x = 148.5, which is the dividing line itself.
+ *
+ * The halves are therefore x < 148.5 and x > 148.5, both of them at much the
+ * same reach - the divider runs along the boom's radius, not across it. The
+ * pieces sit on the side the boom parks towards, and startup_boom_yaw_deg of
+ * +90 puts the park heading along -x, so the assembly half is x > 148.5.
+ *
+ * The offset from the divider is the largest allowed rectangle's own half-width,
+ * so a 12x9 cm result laid out along the sheet spans x = 148.5..268.5: entirely
+ * in its half and clear of the far edge. y sits near the middle of the short
+ * edge rather than exactly on it, because the far corner then works out to
+ * dx = 120, dy = 190, r = 225 mm against the 230 mm reach limit, while the
+ * nearest corner is r = 100 mm against the 70 mm minimum. */
+#define MISSION_A4_LONG_EDGE_MM        297.0f
+#define MISSION_TARGET_HALF_OFFSET_MM  60.0f
+#define MISSION_TARGET_CENTER_X_MM     (MISSION_A4_LONG_EDGE_MM / 2.0f + \
+                                        MISSION_TARGET_HALF_OFFSET_MM)
+#define MISSION_TARGET_CENTER_Y_MM     95.0f
 
-   The assembled rectangle needs its whole footprint reachable, so it goes at the
-   middle of the reach band, which is the only placement that leaves clearance at
-   both travel ends. With a 70-230 mm band that is r = 150 mm, and the largest
-   allowed rectangle has a 75 mm half-diagonal, so the fit is tight but real. */
 
 typedef struct {
     MissionId mission;
@@ -170,37 +187,79 @@ void Mission_GetOutput(MissionOutput *output)
     taskEXIT_CRITICAL();
 }
 
+/* Lowers a limit to what the hardware can do, never raises it. */
+static void limit_speed(float *limit, float achievable)
+{
+    if (achievable > 0.0f && achievable < *limit) {
+        *limit = achievable;
+    }
+}
+
+/* Keeps the ramp the same fraction of the move after its speed limit was cut. */
+static void scale_acceleration(float *acceleration,
+                               float speed,
+                               float original_speed)
+{
+    if (original_speed > 0.0f && speed < original_speed) {
+        *acceleration *= speed / original_speed;
+    }
+}
+
 /* Fills the DecisionTaskRequest that the vision task will complete with the
    measured piece polygons. */
 static void build_request(MissionId mission, DecisionTaskRequest *request)
 {
     CraneControlConfig crane_config;
-    TrajectoryPose target_pose;
+    TrajectoryLimits default_limits;
 
     (void)mission;
     DecisionTask_GetDefaultRequest(request);
     CraneControl_GetConfig(&crane_config);
+    default_limits = request->execution.limits;
 
-    /* Place the target on the boom's zero heading at the middle of the reach, so
-       the rectangle is centred in the sweep and every piece is a boom turn away
-       from it. Expressing it as a pose keeps the frame conversion in the crane
-       module, which owns it. */
-    CraneControl_GetPoseAt(0.0f,
-                           0.5f * (crane_config.min_radius_mm +
-                                   crane_config.max_radius_mm),
-                           crane_config.min_z_mm,
-                           &target_pose);
-    request->config.target_center.x_mm = target_pose.x_mm;
-    request->config.target_center.y_mm = target_pose.y_mm;
+    request->config.target_center.x_mm = MISSION_TARGET_CENTER_X_MM;
+    request->config.target_center.y_mm = MISSION_TARGET_CENTER_Y_MM;
 
     /* The crane's lift is a two-position servo, so the planner's transit height
        has to be the crane's own travel height rather than a nominal 40 mm. */
     request->config.pick_z_mm = crane_config.min_z_mm;
     request->config.place_z_mm = crane_config.min_z_mm;
     request->config.transit_z_mm = crane_config.max_z_mm;
+
+    /* Cap the planner at what the drives can actually deliver.
+     *
+     * The default 120 mm/s asked for roughly four times the reach axis's top
+     * speed, so the reference ran away from the mechanism: every tick the drive
+     * got a target further off than it could cover, the arm chased a point it
+     * never caught, and the two axes fell out of step with each other. A limit the
+     * hardware can meet is what lets the tool be where the plan says it is, which
+     * is the whole basis of the motion looking deliberate rather than jerky.
+     *
+     * Only ever a reduction: the stated limits stay the ceiling, because they are
+     * what the mechanism was judged safe at, and the boom would happily swing far
+     * faster than anyone wants it to. The reach axis is the binding one for
+     * linear speed since it turns RPM straight into millimetres, whereas the
+     * boom's contribution depends on radius. */
+    limit_speed(&request->execution.limits.max_linear_velocity_mm_s,
+                (float)crane_config.reach_speed_rpm *
+                    crane_config.reach_mm_per_motor_revolution / 60.0f);
+    limit_speed(&request->execution.limits.max_yaw_velocity_deg_s,
+                (float)crane_config.yaw_speed_rpm * 360.0f /
+                    (60.0f *
+                     crane_config.yaw_motor_revolutions_per_crane_revolution));
+    /* Scale each acceleration by however much its speed was cut, which keeps the
+       ramp the same fraction of the move as it was tuned to be. Holding the
+       stated acceleration against a lower top speed would reach it sooner and so
+       ramp more abruptly, which is the opposite of what is wanted here. */
+    scale_acceleration(&request->execution.limits.max_linear_acceleration_mm_s2,
+                       request->execution.limits.max_linear_velocity_mm_s,
+                       default_limits.max_linear_velocity_mm_s);
+    scale_acceleration(&request->execution.limits.max_yaw_acceleration_deg_s2,
+                       request->execution.limits.max_yaw_velocity_deg_s,
+                       default_limits.max_yaw_velocity_deg_s);
+
     /* The first waypoint has to be where the crane actually is. */
     CraneControl_GetCurrentPose(&request->execution.current_pose);
-
 }
 
 static uint8_t arm_mission(MissionId mission, uint32_t run_id)

@@ -46,6 +46,16 @@ typedef struct {
     uint8_t yaw_acceleration;
     uint8_t reach_acceleration;
     uint8_t expect_stepper_response;
+    /* Non-zero lets startup datum both axes against their mechanical ends instead
+       of trusting that the mechanism was parked before reset. Zero it if the boom's
+       limit switch is removed: the drive would then seek a signal that never
+       arrives and time out. */
+    uint8_t home_on_startup;
+    /* Seek speed and stall threshold for the homing run. The current only
+       matters in the switchless modes, where the end is found by stalling - so on
+       this crane it is the reach axis that depends on it. */
+    uint16_t home_speed_rpm;
+    uint16_t home_limit_current_ma;
 } CraneControlConfig;
 
 typedef struct {
@@ -198,6 +208,24 @@ CraneControlStatus CraneControl_PlanTransitPoses(const TrajectoryPose *from,
  *       so z is not part of the check. Usable before CraneControl_Init().
  */
 CraneControlStatus CraneControl_CheckPose(const TrajectoryPose *pose);
+
+/* How often CraneControl_Update() runs. The controller paces each axis to cover
+   one tick's step per tick, so this has to match the task's actual period or the
+   motion is either jerky or lagging; crane_control_task.c uses it for the delay. */
+#define CRANE_TICK_PERIOD_MS 20U
+
+/**
+ * @brief Datum both stepper axes against their mechanical ends.
+ * @param timeout_ms How long to wait per axis for the drive to report the origin.
+ * @return CRANE_CONTROL_OK once both axes are datumed, and their end stops have
+ *         been established as each axis's zero.
+ * @note The boom homes against its limit switch; the reach has no switch and homes
+ *       against the hard end it reaches when fully drawn in, which the drive
+ *       detects from the motor loading up. Blocks while the drives seek, so it
+ *       belongs in startup rather than the control loop. Does nothing and reports
+ *       OK when config.home_on_startup is zero.
+ */
+CraneControlStatus CraneControl_Home(uint32_t timeout_ms);
 
 /**
  * @brief Hardware hook for the planner's grip flag.

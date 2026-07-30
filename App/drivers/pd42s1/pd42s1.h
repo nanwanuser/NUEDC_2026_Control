@@ -24,11 +24,39 @@ typedef enum {
 } pd42s1_direction_t;
 
 typedef enum {
+    PD42S1_COMMAND_SET_HOME_PARAMETERS = 0x91,
+    PD42S1_COMMAND_TRIGGER_HOME = 0x92,
+    PD42S1_COMMAND_ABORT_HOME = 0x93,
+    PD42S1_COMMAND_READ_HOME_STATE = 0x96,
     PD42S1_COMMAND_TORQUE = 0xF0,
     PD42S1_COMMAND_ABSOLUTE_POSITION = 0xF2,
     PD42S1_COMMAND_RELATIVE_POSITION = 0xF3,
     PD42S1_COMMAND_CLEAR_POSITION = 0xF8,
 } pd42s1_command_t;
+
+/* Which end the drive seeks and whether a switch marks it. The two "no limit"
+   modes detect the end by stall current instead, which needs no switch but drives
+   the mechanism into its hard stop to find it. */
+typedef enum {
+    PD42S1_HOME_MODE_LEFT_NO_LIMIT = 0,
+    PD42S1_HOME_MODE_RIGHT_NO_LIMIT = 1,
+    PD42S1_HOME_MODE_LEFT_LIMIT = 2,
+    PD42S1_HOME_MODE_RIGHT_LIMIT = 3,
+} pd42s1_home_mode_t;
+
+/* How the drive travels to the origin once it knows where it is. */
+typedef enum {
+    PD42S1_HOME_TRIGGER_SINGLE_TURN = 0,
+    PD42S1_HOME_TRIGGER_NEAREST = 1,
+    PD42S1_HOME_TRIGGER_MULTI_TURN = 2,
+} pd42s1_home_trigger_t;
+
+typedef enum {
+    PD42S1_HOME_STATE_IDLE = 0,
+    PD42S1_HOME_STATE_RUNNING = 1,
+    PD42S1_HOME_STATE_COMPLETE = 2,
+    PD42S1_HOME_STATE_NOT_FOUND = 3,
+} pd42s1_home_state_t;
 
 typedef enum {
     PD42S1_RESULT_SUCCESS = 0x01,
@@ -94,6 +122,53 @@ max485_status_t pd42s1_move_relative(uint8_t motor_id,
  * @note The command has no payload. Receive its response before another send.
  */
 max485_status_t pd42s1_clear_position(uint8_t motor_id);
+
+/**
+ * @brief Set how the drive looks for its origin (0x91).
+ * @param mode Which end to seek and whether a limit switch marks it.
+ * @param speed_rpm Seek speed from 0 to 6000 RPM.
+ * @param limit_current_ma Stall threshold from 0 to 3000 mA, used to detect the
+ *        end in the two no-limit modes and ignored in the switch modes.
+ * @note Persisted by the drive, so it only has to be sent when it changes.
+ */
+max485_status_t pd42s1_set_home_parameters(uint8_t motor_id,
+                                         pd42s1_home_mode_t mode,
+                                         pd42s1_direction_t direction,
+                                         uint16_t speed_rpm,
+                                         uint16_t limit_current_ma);
+
+/**
+ * @brief Start a homing run with the stored parameters (0x92).
+ * @note Returns as soon as the drive accepts the command; the run itself takes
+ *       seconds, so poll pd42s1_read_home_state() for the outcome.
+ */
+max485_status_t pd42s1_trigger_home(uint8_t motor_id,
+                                   pd42s1_home_trigger_t trigger);
+
+/**
+ * @brief Interrupt a homing run in progress (0x93).
+ */
+max485_status_t pd42s1_abort_home(uint8_t motor_id);
+
+/**
+ * @brief Consume the reply to a homing command (0x91, 0x92, or 0x93).
+ * @return MAX485_STATUS_OK only when the drive reported success.
+ * @note Separate from pd42s1_receive_response() because these replies echo their
+ *       parameters after the result byte, so the payload length varies.
+ */
+max485_status_t pd42s1_receive_home_reply(uint8_t motor_id,
+                                        pd42s1_command_t command,
+                                        uint32_t timeout_ms);
+
+/**
+ * @brief Read whether a homing run is idle, running, finished, or failed (0x96).
+ * @param state Receives the drive's homing state on success.
+ * @note Sends the query and consumes the reply, so unlike the commands above it
+ *       needs no separate pd42s1_receive_response() call.
+ */
+max485_status_t pd42s1_read_home_state(uint8_t motor_id,
+                                      pd42s1_home_state_t *state,
+                                      uint32_t timeout_ms);
 
 /**
  * @brief Receive and validate the response to a PD42S1 control command.

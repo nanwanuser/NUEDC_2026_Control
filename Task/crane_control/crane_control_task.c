@@ -4,7 +4,9 @@
 #include "main.h"
 #include "task.h"
 
-#define CRANE_CONTROL_TASK_PERIOD_MS 20U
+/* The controller scales each axis's speed to this period, so the two have to be
+   the same number; it owns the definition. */
+#define CRANE_CONTROL_TASK_PERIOD_MS CRANE_TICK_PERIOD_MS
 
 static void snapshot_planner_output(RoutePlanningOutput *output)
 {

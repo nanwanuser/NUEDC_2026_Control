@@ -68,6 +68,8 @@ void Error_Handler(void);
 #define Buzz_GPIO_Port GPIOB
 #define EN485_Pin GPIO_PIN_8
 #define EN485_GPIO_Port GPIOE
+#define Magnet_Pin GPIO_PIN_12
+#define Magnet_GPIO_Port GPIOE
 #define PWM1_Pin GPIO_PIN_13
 #define PWM1_GPIO_Port GPIOE
 #define PWM2_Pin GPIO_PIN_14

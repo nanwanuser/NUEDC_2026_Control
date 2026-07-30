@@ -335,6 +335,73 @@ static void test_slanted_pieces_are_handled(void)
           "slanted pieces: node budget exhausted on only four pieces");
 }
 
+/* The task starts the pieces in one half of the sheet and scores the assembly in
+   the other, but which half is which depends on the corner the camera
+   calibration calls the origin. The solver therefore has to work it out from the
+   pieces: the same stated target has to end up on the far side of the divider
+   from wherever the pieces actually are, and mirroring it must not disturb the
+   layout itself. */
+static void solve_in_half(float piece_offset_x_mm,
+                          float target_x_mm,
+                          const char *label,
+                          DecisionPoint *centroid)
+{
+    DecisionVisionFrame frame;
+    DecisionConfig config;
+    DecisionPlan plan;
+    uint8_t index;
+    char message[128];
+
+    build_frame(&frame, 0.0f);
+    for (index = 0U; index < frame.piece_count; ++index) {
+        uint8_t vertex;
+
+        frame.pieces[index].center.x_mm += piece_offset_x_mm;
+        for (vertex = 0U; vertex < frame.pieces[index].vertex_count; ++vertex) {
+            frame.pieces[index].vertices[vertex].x_mm += piece_offset_x_mm;
+        }
+    }
+
+    Decision_GetDefaultConfig(&config);
+    config.target_center.x_mm = target_x_mm;
+    config.target_center.y_mm = 95.0f;
+
+    (void)snprintf(message, sizeof(message), "%s: expected OK", label);
+    check(Decision_Solve(&frame, &config, &plan) == DECISION_RESULT_OK, message);
+
+    centroid->x_mm = 0.0f;
+    centroid->y_mm = 0.0f;
+    for (index = 0U; index < plan.move_count; ++index) {
+        centroid->x_mm += plan.moves[index].place.x_mm;
+        centroid->y_mm += plan.moves[index].place.y_mm;
+    }
+    if (plan.move_count != 0U) {
+        centroid->x_mm /= (float)plan.move_count;
+        centroid->y_mm /= (float)plan.move_count;
+    }
+}
+
+static void test_target_lands_in_the_other_half(void)
+{
+    const float divider = DECISION_PAPER_DIVIDER_X_MM;
+    DecisionPoint near_column;
+    DecisionPoint far_column;
+
+    /* build_frame scatters the pieces around x = 40..175, so they sit mostly
+       left of the divider; the stated target is on the right and must stay. */
+    solve_in_half(0.0f, divider + 60.0f, "pieces left, target right",
+                  &near_column);
+    check(near_column.x_mm > divider,
+          "pieces left: assembly did not stay in the right half");
+
+    /* Same stated target, pieces moved into the right half: the target has to be
+       mirrored to the left rather than laid on top of them. */
+    solve_in_half(120.0f, divider + 60.0f, "pieces right, target right",
+                  &far_column);
+    check(far_column.x_mm < divider,
+          "pieces right: assembly was not mirrored out of their half");
+}
+
 int main(void)
 {
     test_exact_pieces();
@@ -345,6 +412,7 @@ int main(void)
     test_plan_places_pieces_apart(3.0f, "3 mm cutting error");
     test_rejects_degenerate_frame();
     test_slanted_pieces_are_handled();
+    test_target_lands_in_the_other_half();
 
     if (failures != 0) {
         printf("%d decision test(s) failed\n", failures);

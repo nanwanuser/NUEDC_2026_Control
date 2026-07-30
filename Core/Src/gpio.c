@@ -56,6 +56,9 @@ void MX_GPIO_Init(void)
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(EN485_GPIO_Port, EN485_Pin, GPIO_PIN_RESET);
 
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(Magnet_GPIO_Port, Magnet_Pin, GPIO_PIN_RESET);
+
   /*Configure GPIO pins : Key3_Pin Key1_Pin Key2_Pin */
   GPIO_InitStruct.Pin = Key3_Pin|Key1_Pin|Key2_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
@@ -75,6 +78,13 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(EN485_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : Magnet_Pin */
+  GPIO_InitStruct.Pin = Magnet_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(Magnet_GPIO_Port, &GPIO_InitStruct);
 
   /* EXTI interrupt init*/
   HAL_NVIC_SetPriority(EXTI0_IRQn, 5, 0);

@@ -4,6 +4,8 @@
 
 #define PD42S1_TORQUE_PAYLOAD_LENGTH 3U
 #define PD42S1_POSITION_PAYLOAD_LENGTH 8U
+/* Mode, direction, four speed bytes, two current bytes. */
+#define PD42S1_HOME_PARAMETERS_PAYLOAD_LENGTH 8U
 
 static bool pd42s1_direction_is_valid(pd42s1_direction_t direction)
 {
@@ -11,6 +13,9 @@ static bool pd42s1_direction_is_valid(pd42s1_direction_t direction)
            direction == PD42S1_DIRECTION_REVERSE;
 }
 
+/* The control commands all answer with a single result byte. The homing commands
+   echo their parameters back as well, so they consume their own replies through
+   pd42s1_receive_home_reply() rather than going through here. */
 static bool pd42s1_command_is_supported(pd42s1_command_t command)
 {
     return command == PD42S1_COMMAND_TORQUE ||
@@ -112,6 +117,104 @@ max485_status_t pd42s1_move_relative(uint8_t motor_id,
     return pd42s1_send_position(motor_id, PD42S1_COMMAND_RELATIVE_POSITION,
                                 direction, acceleration, speed_rpm,
                                 position_units);
+}
+
+max485_status_t pd42s1_receive_home_reply(uint8_t motor_id,
+                                        pd42s1_command_t command,
+                                        uint32_t timeout_ms)
+{
+    max485_frame_t frame;
+    max485_status_t status = max485_receive_frame(&frame, timeout_ms);
+
+    if (status != MAX485_STATUS_OK) {
+        return status;
+    }
+    if (frame.address != motor_id || frame.function != (uint8_t)command ||
+        frame.payload_length == 0U ||
+        !pd42s1_result_is_valid(frame.payload[0])) {
+        return MAX485_STATUS_UNEXPECTED_FRAME;
+    }
+    return frame.payload[0] == PD42S1_RESULT_SUCCESS
+               ? MAX485_STATUS_OK
+               : MAX485_STATUS_UNEXPECTED_FRAME;
+}
+
+max485_status_t pd42s1_set_home_parameters(uint8_t motor_id,
+                                         pd42s1_home_mode_t mode,
+                                         pd42s1_direction_t direction,
+                                         uint16_t speed_rpm,
+                                         uint16_t limit_current_ma)
+{
+    uint8_t payload[PD42S1_HOME_PARAMETERS_PAYLOAD_LENGTH];
+
+    if (!pd42s1_is_supported_motor(motor_id) ||
+        !pd42s1_direction_is_valid(direction) ||
+        mode > PD42S1_HOME_MODE_RIGHT_LIMIT ||
+        speed_rpm > PD42S1_MAX_SPEED_RPM ||
+        limit_current_ma > PD42S1_MAX_TORQUE_CURRENT_MA) {
+        return MAX485_STATUS_INVALID_ARGUMENT;
+    }
+
+    payload[0] = (uint8_t)mode;
+    payload[1] = (uint8_t)direction;
+    /* The speed field is four bytes wide even though the range fits in two. */
+    pd42s1_write_u32_be(&payload[2], speed_rpm);
+    pd42s1_write_u16_be(&payload[6], limit_current_ma);
+    return max485_send_frame(motor_id, PD42S1_COMMAND_SET_HOME_PARAMETERS,
+                             payload, sizeof(payload), PD42S1_UART_TIMEOUT_MS);
+}
+
+max485_status_t pd42s1_trigger_home(uint8_t motor_id,
+                                   pd42s1_home_trigger_t trigger)
+{
+    uint8_t payload[1];
+
+    if (!pd42s1_is_supported_motor(motor_id) ||
+        trigger > PD42S1_HOME_TRIGGER_MULTI_TURN) {
+        return MAX485_STATUS_INVALID_ARGUMENT;
+    }
+    payload[0] = (uint8_t)trigger;
+    return max485_send_frame(motor_id, PD42S1_COMMAND_TRIGGER_HOME,
+                             payload, sizeof(payload), PD42S1_UART_TIMEOUT_MS);
+}
+
+max485_status_t pd42s1_abort_home(uint8_t motor_id)
+{
+    if (!pd42s1_is_supported_motor(motor_id)) {
+        return MAX485_STATUS_INVALID_ARGUMENT;
+    }
+    return max485_send_frame(motor_id, PD42S1_COMMAND_ABORT_HOME,
+                             NULL, 0U, PD42S1_UART_TIMEOUT_MS);
+}
+
+max485_status_t pd42s1_read_home_state(uint8_t motor_id,
+                                      pd42s1_home_state_t *state,
+                                      uint32_t timeout_ms)
+{
+    max485_frame_t frame;
+    max485_status_t status;
+
+    if (!pd42s1_is_supported_motor(motor_id) || state == NULL) {
+        return MAX485_STATUS_INVALID_ARGUMENT;
+    }
+    status = max485_send_frame(motor_id, PD42S1_COMMAND_READ_HOME_STATE,
+                              NULL, 0U, PD42S1_UART_TIMEOUT_MS);
+    if (status != MAX485_STATUS_OK) {
+        return status;
+    }
+    status = max485_receive_frame(&frame, timeout_ms);
+    if (status != MAX485_STATUS_OK) {
+        return status;
+    }
+    if (frame.address != motor_id ||
+        frame.function != (uint8_t)PD42S1_COMMAND_READ_HOME_STATE ||
+        frame.payload_length < 2U ||
+        frame.payload[0] != PD42S1_RESULT_SUCCESS ||
+        frame.payload[1] > (uint8_t)PD42S1_HOME_STATE_NOT_FOUND) {
+        return MAX485_STATUS_UNEXPECTED_FRAME;
+    }
+    *state = (pd42s1_home_state_t)frame.payload[1];
+    return MAX485_STATUS_OK;
 }
 
 max485_status_t pd42s1_clear_position(uint8_t motor_id)

@@ -45,6 +45,12 @@ extern "C" {
 #define DECISION_OVERLAP_TOLERANCE_MM   \
     (0.5f * DECISION_EDGE_TOLERANCE_MM + 1.0f)
 
+/* The sheet's midline along its long edge. The task starts the pieces in one half
+   and scores the assembly in the other, but which half is which depends on the
+   corner the camera calibration calls the origin, so the solver reads it off the
+   pieces it was given rather than assuming. */
+#define DECISION_PAPER_DIVIDER_X_MM     148.5f
+
 /* Target rectangle envelope, 9x5 cm to 12x9 cm in the task, widened by the
    cutting error that accumulates along each side. The task guarantees the true
    rectangle is inside the stated range; what is measured is not, so clamping to
@@ -77,6 +83,11 @@ typedef struct {
 
 typedef struct {
     DecisionPoint target_center;
+    /* Long-axis coordinate of the line splitting the sheet into the half the
+       pieces start in and the half they are assembled in. Set to zero to place
+       the rectangle at target_center unconditionally; see
+       DECISION_PAPER_DIVIDER_X_MM. */
+    float paper_divider_x_mm;
     float pick_z_mm;
     /* Cruise height used above the pick and the place location. */
     float transit_z_mm;
