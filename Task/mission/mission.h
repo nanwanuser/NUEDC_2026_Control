@@ -63,6 +63,39 @@ typedef enum {
     MISSION_DIAG_RX_LINE_ERROR = 7
 } MissionDiagnosis;
 
+/* Why a run failed once the plan had been handed over, which the three-beep
+   failure tone on its own says nothing about. Beeped out as two long tones
+   followed by this many short ones, so the count cannot be confused with the
+   acquisition codes above: those use a single long tone. Counting to seven by
+   ear is unreliable, which is why the stage gets its own lead-in rather than
+   continuing the numbering. */
+typedef enum {
+    MISSION_RUN_DIAG_NONE = 0,
+    /* The measured pieces were rejected before the search even ran: a piece
+       with more than five vertices or fewer than three, a degenerate area,
+       duplicate ids, or a non-finite coordinate. This is a vision-side data
+       problem, not a geometry one. */
+    MISSION_RUN_DIAG_BAD_FRAME = 1,
+    /* The search ran to completion and no arrangement passed. Either the
+       pieces genuinely do not tile a rectangle in the allowed size range, or a
+       tolerance in DecisionConfig is tighter than the pieces were cut. */
+    MISSION_RUN_DIAG_NO_SOLUTION = 2,
+    /* The search hit its node limit first, so a solution may exist but was not
+       reached. Raise DECISION_DEFAULT_MAX_NODES. */
+    MISSION_RUN_DIAG_SEARCH_LIMIT = 3,
+    /* A plan existed but no trajectory could be generated for one of its moves,
+       usually a pick or place point outside the boom or reach travel. */
+    MISSION_RUN_DIAG_ROUTE_REJECTED = 4,
+    /* The crane refused a reference mid-move, so the arm stopped following. */
+    MISSION_RUN_DIAG_CRANE_REFUSED = 5,
+    /* The two-minute limit expired with moves still outstanding. */
+    MISSION_RUN_DIAG_TIME_LIMIT = 6,
+    /* The key was pressed before the crane task had parked the boom, so the
+       acquisition was never armed. Distinct from the codes above because there
+       was no run: waiting a second and pressing again is the whole fix. */
+    MISSION_RUN_DIAG_NOT_READY = 7
+} MissionRunDiagnosis;
+
 typedef struct {
     MissionId mission;
     MissionState state;
@@ -78,6 +111,9 @@ typedef struct {
     CraneControlStatus crane_status;
     /* Set when a run ends in FAILED or TIMEOUT during acquisition. */
     MissionDiagnosis diagnosis;
+    /* Set when a run ends in FAILED or TIMEOUT after the plan was handed over,
+       or when the key press itself was refused. */
+    MissionRunDiagnosis run_diagnosis;
     /* Copied from the vision task at the moment the run ended, so a debugger or
        host can read the counters without racing the acquisition. */
     uint32_t valid_frame_count;

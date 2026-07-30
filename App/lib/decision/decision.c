@@ -345,31 +345,6 @@ static void fill_move(const DecisionPiece *piece,
     move->place.yaw_deg = target_yaw_deg;
 }
 
-static float orientation(DecisionPoint start,
-                         DecisionPoint end,
-                         DecisionPoint point)
-{
-    return point_cross(point_subtract(end, start),
-                       point_subtract(point, start));
-}
-
-static uint8_t segments_properly_intersect(DecisionPoint a0,
-                                           DecisionPoint a1,
-                                           DecisionPoint b0,
-                                           DecisionPoint b1)
-{
-    float ab0 = orientation(a0, a1, b0);
-    float ab1 = orientation(a0, a1, b1);
-    float ba0 = orientation(b0, b1, a0);
-    float ba1 = orientation(b0, b1, a1);
-    float epsilon = DECISION_GEOMETRY_EPSILON_MM;
-
-    return (uint8_t)(((ab0 > epsilon && ab1 < -epsilon) ||
-                      (ab0 < -epsilon && ab1 > epsilon)) &&
-                     ((ba0 > epsilon && ba1 < -epsilon) ||
-                      (ba0 < -epsilon && ba1 > epsilon)));
-}
-
 static void transformed_vertices(const DecisionPiece *piece,
                                  const RigidTransform *transform,
                                  DecisionPoint *vertices)
@@ -396,10 +371,29 @@ static DecisionPoint average_vertices(const DecisionPoint *vertices,
     return average;
 }
 
+/* Depth a point has to reach inside the other polygon before the pair counts as
+   overlapping. Two pieces joined along edges of unequal length necessarily have
+   the longer one poking into its neighbour by up to half the length difference,
+   so a zero-tolerance test rejects exactly the layouts the loose edge tolerance
+   was widened to admit. Judging by depth instead separates that unavoidable
+   nibble from one piece genuinely sitting on top of another. */
+static uint8_t point_is_inside_by(DecisionPoint point,
+                                  const DecisionPoint *vertices,
+                                  uint8_t vertex_count,
+                                  float depth_mm)
+{
+    if (point_polygon_location(point, vertices, vertex_count) <= 0) {
+        return 0U;
+    }
+    return (uint8_t)(minimum_edge_distance(point, vertices, vertex_count) >
+                     depth_mm);
+}
+
 static uint8_t polygons_overlap(const DecisionPiece *left_piece,
                                 const RigidTransform *left_transform,
                                 const DecisionPiece *right_piece,
-                                const RigidTransform *right_transform)
+                                const RigidTransform *right_transform,
+                                float tolerance_mm)
 {
     DecisionPoint left[DECISION_MAX_VERTICES];
     DecisionPoint right[DECISION_MAX_VERTICES];
@@ -409,22 +403,11 @@ static uint8_t polygons_overlap(const DecisionPiece *left_piece,
     transformed_vertices(left_piece, left_transform, left);
     transformed_vertices(right_piece, right_transform, right);
 
-    for (left_index = 0U; left_index < left_piece->vertex_count; ++left_index) {
-        uint8_t left_next =
-            (uint8_t)((left_index + 1U) % left_piece->vertex_count);
-        for (right_index = 0U;
-             right_index < right_piece->vertex_count;
-             ++right_index) {
-            uint8_t right_next =
-                (uint8_t)((right_index + 1U) % right_piece->vertex_count);
-            if (segments_properly_intersect(left[left_index],
-                                            left[left_next],
-                                            right[right_index],
-                                            right[right_next]) != 0U) {
-                return 1U;
-            }
-        }
-    }
+    /* No edge-crossing test: two pieces joined along edges of unequal length
+       cross at the seam by construction, so a crossing on its own says nothing
+       about whether they really overlap. The depth tests below decide instead,
+       and a genuine stack always drives some vertex, midpoint or centroid well
+       inside the other piece. */
 
     for (left_index = 0U; left_index < left_piece->vertex_count; ++left_index) {
         uint8_t left_next =
@@ -434,12 +417,14 @@ static uint8_t polygons_overlap(const DecisionPiece *left_piece,
             0.5f * (left[left_index].y_mm + left[left_next].y_mm)
         };
 
-        if (point_polygon_location(left[left_index],
-                                   right,
-                                   right_piece->vertex_count) > 0 ||
-            point_polygon_location(midpoint,
-                                   right,
-                                   right_piece->vertex_count) > 0) {
+        if (point_is_inside_by(left[left_index],
+                               right,
+                               right_piece->vertex_count,
+                               tolerance_mm) != 0U ||
+            point_is_inside_by(midpoint,
+                               right,
+                               right_piece->vertex_count,
+                               tolerance_mm) != 0U) {
             return 1U;
         }
     }
@@ -451,16 +436,20 @@ static uint8_t polygons_overlap(const DecisionPiece *left_piece,
             0.5f * (right[right_index].y_mm + right[right_next].y_mm)
         };
 
-        if (point_polygon_location(right[right_index],
-                                   left,
-                                   left_piece->vertex_count) > 0 ||
-            point_polygon_location(midpoint,
-                                   left,
-                                   left_piece->vertex_count) > 0) {
+        if (point_is_inside_by(right[right_index],
+                               left,
+                               left_piece->vertex_count,
+                               tolerance_mm) != 0U ||
+            point_is_inside_by(midpoint,
+                               left,
+                               left_piece->vertex_count,
+                               tolerance_mm) != 0U) {
             return 1U;
         }
     }
 
+    /* A centroid inside the other piece is a real stack rather than a nibble at
+       the seam, so it stays a zero-tolerance rejection. */
     if (point_polygon_location(average_vertices(left,
                                                 left_piece->vertex_count),
                                right,
@@ -782,7 +771,9 @@ static void search_layout(GeneralSearch *search,
                             polygons_overlap(&search->pieces[compare_index],
                                              &transforms[compare_index],
                                              new_piece,
-                                             &candidate_transform) != 0U) {
+                                             &candidate_transform,
+                                             DECISION_OVERLAP_TOLERANCE_MM)
+                                != 0U) {
                             overlap = 1U;
                             break;
                         }
@@ -826,13 +817,13 @@ void Decision_GetDefaultConfig(DecisionConfig *config)
     config->pick_z_mm = 0.0f;
     config->transit_z_mm = 40.0f;
     config->place_z_mm = 0.0f;
-    config->edge_length_tolerance_mm = 3.0f;
-    config->boundary_tolerance_mm = 3.0f;
-    config->max_fill_error_ratio = 0.08f;
-    config->min_short_side_mm = 50.0f;
-    config->max_short_side_mm = 90.0f;
-    config->min_long_side_mm = 90.0f;
-    config->max_long_side_mm = 120.0f;
+    config->edge_length_tolerance_mm = DECISION_EDGE_TOLERANCE_MM;
+    config->boundary_tolerance_mm = DECISION_BOUNDARY_TOLERANCE_MM;
+    config->max_fill_error_ratio = DECISION_MAX_FILL_ERROR_RATIO;
+    config->min_short_side_mm = DECISION_MIN_SHORT_SIDE_MM;
+    config->max_short_side_mm = DECISION_MAX_SHORT_SIDE_MM;
+    config->min_long_side_mm = DECISION_MIN_LONG_SIDE_MM;
+    config->max_long_side_mm = DECISION_MAX_LONG_SIDE_MM;
     config->max_search_nodes = DECISION_DEFAULT_MAX_NODES;
 }
 

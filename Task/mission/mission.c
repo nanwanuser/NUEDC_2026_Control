@@ -269,6 +269,40 @@ static void signal_failure(void)
     }
 }
 
+/* Turns the execution outcome into the one number that says why a run that had
+   already been planned stopped. Order matters: a route that was never generated
+   leaves crane_status untouched, so the earlier stage has to be tested first or
+   every failure would read as a crane refusal. */
+static MissionRunDiagnosis diagnose_run_failure(const MissionOutput *output)
+{
+    /* Separate the solver's own outcomes: bad input, a search that finished
+       without a fit, and a search that ran out of nodes need different fixes. */
+    if (output->decision_result == DECISION_RESULT_INVALID_FRAME ||
+        output->decision_result == DECISION_RESULT_INVALID_ARGUMENT ||
+        output->decision_result == DECISION_RESULT_NUMERIC_ERROR) {
+        return MISSION_RUN_DIAG_BAD_FRAME;
+    }
+    if (output->decision_result == DECISION_RESULT_SEARCH_LIMIT) {
+        return MISSION_RUN_DIAG_SEARCH_LIMIT;
+    }
+    if (output->decision_result != DECISION_RESULT_OK) {
+        return MISSION_RUN_DIAG_NO_SOLUTION;
+    }
+    if (output->trajectory_result != TRAJECTORY_RESULT_OK) {
+        return MISSION_RUN_DIAG_ROUTE_REJECTED;
+    }
+    if (output->crane_status != CRANE_CONTROL_OK) {
+        return MISSION_RUN_DIAG_CRANE_REFUSED;
+    }
+    if (output->state == MISSION_STATE_TIMEOUT) {
+        return MISSION_RUN_DIAG_TIME_LIMIT;
+    }
+    /* DECISION_EXECUTION_ERROR with every result still OK means submit_move
+       failed to build a trajectory, which is the same class of fault as a
+       rejected route. */
+    return MISSION_RUN_DIAG_ROUTE_REJECTED;
+}
+
 /* Turns the vision task's counters into the one number that says why the
    acquisition failed. The counters distinguish cases the three-beep failure
    tone cannot: nothing on the wire, bytes that never formed a frame, frames
@@ -313,6 +347,32 @@ static void signal_diagnosis(MissionDiagnosis code)
     osDelay(MISSION_DIAG_LEAD_MS);
     buzzer_off(&Mission_Buzzer);
     osDelay(MISSION_DIAG_GAP_MS);
+
+    for (index = 0U; index < (uint32_t)code; ++index) {
+        (void)buzzer_beep(&Mission_Buzzer, MISSION_DIAG_BEEP_MS);
+        osDelay(MISSION_DIAG_BEEP_MS);
+        buzzer_off(&Mission_Buzzer);
+        osDelay(MISSION_DIAG_BEEP_GAP_MS);
+    }
+}
+
+/* Two long tones, pause, then `code` short beeps. The doubled lead-in is what
+   separates an execution failure from an acquisition one, so the short count
+   only ever has to be told apart from four others. */
+static void signal_run_diagnosis(MissionRunDiagnosis code)
+{
+    uint32_t index;
+
+    if (code == MISSION_RUN_DIAG_NONE) {
+        return;
+    }
+
+    for (index = 0U; index < 2U; ++index) {
+        (void)buzzer_beep(&Mission_Buzzer, MISSION_DIAG_LEAD_MS);
+        osDelay(MISSION_DIAG_LEAD_MS);
+        buzzer_off(&Mission_Buzzer);
+        osDelay(MISSION_DIAG_GAP_MS);
+    }
 
     for (index = 0U; index < (uint32_t)code; ++index) {
         (void)buzzer_beep(&Mission_Buzzer, MISSION_DIAG_BEEP_MS);
@@ -368,9 +428,12 @@ void Mission_App(void *argument)
                 publish_output(&output);
                 (void)buzzer_beep(&Mission_Buzzer, MISSION_START_BEEP_MS);
             } else {
+                /* arm_mission only refuses while the crane is still parking. */
                 output.state = MISSION_STATE_FAILED;
+                output.run_diagnosis = MISSION_RUN_DIAG_NOT_READY;
                 publish_output(&output);
                 signal_failure();
+                signal_run_diagnosis(output.run_diagnosis);
             }
         } else if (output.state == MISSION_STATE_ACQUIRING) {
             output.elapsed_ms = elapsed_ms(run_start_tick, now_tick);
@@ -434,6 +497,10 @@ void Mission_App(void *argument)
                 RoutePlanning_Cancel();
                 output.state = MISSION_STATE_TIMEOUT;
             }
+            if (output.state == MISSION_STATE_FAILED ||
+                output.state == MISSION_STATE_TIMEOUT) {
+                output.run_diagnosis = diagnose_run_failure(&output);
+            }
             publish_output(&output);
 
             if (output.state == MISSION_STATE_COMPLETE) {
@@ -441,6 +508,7 @@ void Mission_App(void *argument)
             } else if (output.state == MISSION_STATE_FAILED ||
                        output.state == MISSION_STATE_TIMEOUT) {
                 signal_failure();
+                signal_run_diagnosis(output.run_diagnosis);
             }
         }
 

@@ -121,6 +121,15 @@ uint8_t DecisionTask_Submit(const DecisionTaskRequest *request)
     taskENTER_CRITICAL();
     DecisionTask_Input = *request;
     DecisionTask_RequestPending = 1U;
+    /* Retire the previous run's outcome here rather than when this task next
+       gets scheduled. The caller starts watching the output as soon as this
+       returns, so a terminal COMPLETE or ERROR left over from the last request
+       would otherwise be read as this one's result. */
+    DecisionTask_Output.execution_state = DECISION_EXECUTION_IDLE;
+    DecisionTask_Output.result = DECISION_RESULT_OK;
+    DecisionTask_Output.trajectory_result = TRAJECTORY_RESULT_OK;
+    DecisionTask_Output.active_move_index = 0U;
+    DecisionTask_Output.plan.move_count = 0U;
     taskEXIT_CRITICAL();
     return 1U;
 }

@@ -9,9 +9,52 @@ extern "C" {
 
 #include "trajectory.h"
 
+/* Both from the task: at most four pieces, at most five edges each. */
 #define DECISION_MAX_PIECES       4U
 #define DECISION_MAX_VERTICES     5U
 #define DECISION_DEFAULT_MAX_NODES 50000U
+
+/* The task scores an assembly on one geometric criterion: adjacent pieces'
+   corresponding vertices within 2 cm. Every threshold below is therefore a
+   search aid, not a correctness requirement, and each one only has to be tight
+   enough to keep the search from wandering. Sized against hand-cut pieces,
+   whose edges routinely disagree by several millimetres, because a threshold
+   that rejects the true layout turns into NO_SOLUTION rather than a lower
+   score. */
+
+/* Length disagreement allowed between two edges being joined. Hand-cut mating
+   edges differ by millimetres, and the resulting vertex offset stays far inside
+   the 2 cm the task allows, so this is deliberately far looser than the cut
+   accuracy it tolerates. */
+#define DECISION_EDGE_TOLERANCE_MM      8.0f
+/* How far a piece's outermost edge may sit from the bounding rectangle and
+   still count as lying on it. One degree of cutting error across a 100 mm edge
+   is already ~1.7 mm, and the edge itself may be short of the corner. */
+#define DECISION_BOUNDARY_TOLERANCE_MM  8.0f
+/* Slack between the pieces' total area and their bounding rectangle. Gaps left
+   by imperfect cuts count against this, so it has to absorb the sum of all
+   inter-piece seams rather than any single one. */
+#define DECISION_MAX_FILL_ERROR_RATIO   0.20f
+/* How deep one piece may reach into another before the pair counts as
+   overlapping. Joining two edges of unequal length aligns their midpoints, so
+   the longer piece necessarily pokes into its neighbour by up to half the
+   difference: with DECISION_EDGE_TOLERANCE_MM at 8 mm that is 4 mm of
+   unavoidable nibble. Judging overlap by depth rather than by any incursion at
+   all is what lets the loose edge tolerance actually be used; a piece genuinely
+   lying on top of another still reaches far deeper than this. */
+#define DECISION_OVERLAP_TOLERANCE_MM   \
+    (0.5f * DECISION_EDGE_TOLERANCE_MM + 1.0f)
+
+/* Target rectangle envelope, 9x5 cm to 12x9 cm in the task, widened by the
+   cutting error that accumulates along each side. The task guarantees the true
+   rectangle is inside the stated range; what is measured is not, so clamping to
+   the exact range would reject a valid assembly whose edges came out a few
+   millimetres long. */
+#define DECISION_SIDE_MARGIN_MM         12.0f
+#define DECISION_MIN_SHORT_SIDE_MM      (50.0f - DECISION_SIDE_MARGIN_MM)
+#define DECISION_MAX_SHORT_SIDE_MM      (90.0f + DECISION_SIDE_MARGIN_MM)
+#define DECISION_MIN_LONG_SIDE_MM       (90.0f - DECISION_SIDE_MARGIN_MM)
+#define DECISION_MAX_LONG_SIDE_MM       (120.0f + DECISION_SIDE_MARGIN_MM)
 
 typedef struct {
     float x_mm;
