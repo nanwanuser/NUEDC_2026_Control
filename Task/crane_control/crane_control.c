@@ -27,15 +27,19 @@
 #define CRANE_LIMIT_TOLERANCE_DEG         0.05f
 
 typedef struct {
+    int64_t position_units;
+    uint8_t valid;
+} CraneMotorPosition;
+
+typedef struct {
     pd42s1_direction_t direction;
     uint32_t position_units;
-    uint8_t valid;
 } CraneMotorCommand;
 static CraneControlConfig s_config;
 static CraneControlState s_state;
 static RoutePlanningOutput s_pending_output;
-static CraneMotorCommand s_yaw_command;
-static CraneMotorCommand s_reach_command;
+static CraneMotorPosition s_yaw_position;
+static CraneMotorPosition s_reach_position;
 static CraneLiftTriggerState s_lift_trigger;
 static uint8_t s_lift_command_pending;
 static volatile uint8_t s_output_pending;
@@ -250,44 +254,71 @@ static uint8_t target_is_in_workspace(const CraneActuatorTarget *target)
                      target->lift_servo_angle_deg <= SERVO_MAX_ANGLE_DEG);
 }
 
-static uint8_t revolutions_to_command(float revolutions,
-                                      CraneMotorCommand *command)
+/* Planner targets remain absolute in the crane frame. Keep the last accepted
+   motor target in software and send only the signed increment to the drive. */
+static uint8_t revolutions_to_position(float revolutions,
+                                       CraneMotorPosition *position)
 {
-    double position_units = fabs((double)revolutions) *
-                            PD42S1_POSITION_UNITS_PER_REVOLUTION;
+    double magnitude_units = fabs((double)revolutions) *
+                             PD42S1_POSITION_UNITS_PER_REVOLUTION;
+    int64_t rounded_units;
 
-    if (!isfinite(revolutions) || position_units > (double)UINT32_MAX) {
+    if (!isfinite(revolutions) || magnitude_units > (double)UINT32_MAX) {
         return 0U;
     }
-    command->direction = revolutions < 0.0f ? PD42S1_DIRECTION_REVERSE
-                                            : PD42S1_DIRECTION_FORWARD;
-    command->position_units = (uint32_t)(position_units + 0.5);
-    command->valid = 1U;
+    rounded_units = (int64_t)(magnitude_units + 0.5);
+    position->position_units = revolutions < 0.0f ? -rounded_units
+                                                  : rounded_units;
+    position->valid = 1U;
     return 1U;
 }
 
-static uint8_t command_has_changed(const CraneMotorCommand *next,
-                                   const CraneMotorCommand *previous,
-                                   uint8_t force)
+static uint8_t position_has_changed(const CraneMotorPosition *next,
+                                    const CraneMotorPosition *previous,
+                                    uint8_t force)
 {
-    uint32_t difference;
+    uint64_t difference;
 
-    if (force != 0U || previous->valid == 0U ||
-        next->direction != previous->direction) {
+    if (force != 0U || previous->valid == 0U) {
         return 1U;
     }
-    difference = next->position_units > previous->position_units
-                     ? next->position_units - previous->position_units
-                     : previous->position_units - next->position_units;
+    difference = next->position_units >= previous->position_units
+                     ? (uint64_t)(next->position_units -
+                                  previous->position_units)
+                     : (uint64_t)(previous->position_units -
+                                  next->position_units);
     return (uint8_t)(difference >= s_config.min_stepper_change_units);
 }
+
+static uint8_t relative_command_from_positions(
+    const CraneMotorPosition *next,
+    const CraneMotorPosition *previous,
+    CraneMotorCommand *command)
+{
+    const int64_t previous_units = previous->valid != 0U
+                                       ? previous->position_units
+                                       : 0;
+    const int64_t delta_units = next->position_units - previous_units;
+    const uint64_t magnitude_units = delta_units < 0
+                                         ? (uint64_t)(-delta_units)
+                                         : (uint64_t)delta_units;
+
+    if (magnitude_units > UINT32_MAX) {
+        return 0U;
+    }
+    command->direction = delta_units < 0 ? PD42S1_DIRECTION_REVERSE
+                                         : PD42S1_DIRECTION_FORWARD;
+    command->position_units = (uint32_t)magnitude_units;
+    return 1U;
+}
+
 static CraneControlStatus send_motor_command(uint8_t motor_id,
                                              uint16_t speed_rpm,
                                              uint8_t acceleration,
                                              const CraneMotorCommand *command)
 {
     pd42s1_result_t result;
-    max485_status_t status = pd42s1_move_absolute(
+    max485_status_t status = pd42s1_move_relative(
         motor_id, command->direction, acceleration, speed_rpm,
         command->position_units);
 
@@ -298,7 +329,7 @@ static CraneControlStatus send_motor_command(uint8_t motor_id,
         return CRANE_CONTROL_OK;
     }
     status = pd42s1_receive_response(motor_id,
-                                     PD42S1_COMMAND_ABSOLUTE_POSITION,
+                                     PD42S1_COMMAND_RELATIVE_POSITION,
                                      &result, PD42S1_UART_TIMEOUT_MS);
     if (status != MAX485_STATUS_OK) {
         return CRANE_CONTROL_TRANSPORT_ERROR;
@@ -306,23 +337,30 @@ static CraneControlStatus send_motor_command(uint8_t motor_id,
     return result == PD42S1_RESULT_SUCCESS ? CRANE_CONTROL_OK
                                            : CRANE_CONTROL_DRIVE_REJECTED;
 }
+
 static CraneControlStatus command_axis(uint8_t motor_id,
                                        uint16_t speed_rpm,
                                        uint8_t acceleration,
-                                       float revolutions,
+                                       float target_revolutions,
                                        uint8_t force,
-                                       CraneMotorCommand *previous)
+                                       CraneMotorPosition *previous)
 {
-    CraneMotorCommand next = {0};
+    CraneMotorPosition next = {0};
+    CraneMotorCommand relative = {0};
     CraneControlStatus status;
 
-    if (revolutions_to_command(revolutions, &next) == 0U) {
+    if (revolutions_to_position(target_revolutions, &next) == 0U ||
+        relative_command_from_positions(&next, previous, &relative) == 0U) {
         return CRANE_CONTROL_OUT_OF_WORKSPACE;
     }
-    if (command_has_changed(&next, previous, force) == 0U) {
+    if (position_has_changed(&next, previous, force) == 0U) {
         return CRANE_CONTROL_OK;
     }
-    status = send_motor_command(motor_id, speed_rpm, acceleration, &next);
+    if (relative.position_units == 0U) {
+        *previous = next;
+        return CRANE_CONTROL_OK;
+    }
+    status = send_motor_command(motor_id, speed_rpm, acceleration, &relative);
     if (status == CRANE_CONTROL_OK) {
         *previous = next;
     }
@@ -337,7 +375,7 @@ static CraneControlStatus initialize_yaw_axis(void)
 
     return command_axis(PD42S1_MOTOR_1_ID, s_config.yaw_speed_rpm,
                         s_config.yaw_acceleration, revolutions, 1U,
-                        &s_yaw_command);
+                        &s_yaw_position);
 }
 
 static CraneControlStatus apply_output(const RoutePlanningOutput *output)
@@ -361,11 +399,11 @@ static CraneControlStatus apply_output(const RoutePlanningOutput *output)
         s_config.reach_mm_per_motor_revolution;
     status = command_axis(PD42S1_MOTOR_1_ID, s_config.yaw_speed_rpm,
                           s_config.yaw_acceleration, yaw_revolutions,
-                          force, &s_yaw_command);
+                          force, &s_yaw_position);
     if (status == CRANE_CONTROL_OK) {
         status = command_axis(PD42S1_MOTOR_2_ID, s_config.reach_speed_rpm,
                               s_config.reach_acceleration, reach_revolutions,
-                              force, &s_reach_command);
+                              force, &s_reach_position);
     }
     if (status == CRANE_CONTROL_OK && s_lift_command_pending != 0U) {
         if (Servo_SetAngle(SERVO_LIFT,
@@ -417,8 +455,8 @@ CraneControlStatus CraneControl_Init(const CraneControlConfig *config)
     s_config = *config;
     s_config_loaded = 1U;
     (void)memset(&s_state, 0, sizeof(s_state));
-    (void)memset(&s_yaw_command, 0, sizeof(s_yaw_command));
-    (void)memset(&s_reach_command, 0, sizeof(s_reach_command));
+    (void)memset(&s_yaw_position, 0, sizeof(s_yaw_position));
+    (void)memset(&s_reach_position, 0, sizeof(s_reach_position));
     CraneLiftTrigger_Init(&s_lift_trigger, 0.0f);
     s_lift_command_pending = 0U;
     s_output_pending = 0U;
