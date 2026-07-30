@@ -15,7 +15,6 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Visualize the native decision and Cartesian trajectory algorithms."
     )
-    parser.add_argument("--mode", choices=("fixed", "general"), default="general")
     parser.add_argument("--snapshot", type=Path)
     return parser.parse_args()
 
@@ -34,7 +33,7 @@ def main() -> int:
         from simulation.simulator import run_simulation
         from simulation.visualization import create_figure
 
-        result = run_simulation(create_scenario(args.mode))
+        result = run_simulation(create_scenario())
         figure, view = create_figure(result)
         if args.snapshot is not None:
             output = args.snapshot.resolve()

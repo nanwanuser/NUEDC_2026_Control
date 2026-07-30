@@ -30,12 +30,11 @@ typedef struct {
 } VisionUartOutput;
 
 void VisionUart_Init(void);
-uint8_t VisionUart_SetFixedLayout(const DecisionFixedLayout *layout);
 
 /* Arms one acquisition. The task stays idle with the receiver off until this
    is called, so a key press is what starts the contest run. The submitted
-   DecisionTaskRequest is base_request with vision and fixed_layout replaced by
-   what the camera actually sent; the mode stays as the caller set it. */
+   DecisionTaskRequest is base_request with vision replaced by what the camera
+   actually sent. */
 uint8_t VisionUart_Arm(const DecisionTaskRequest *base_request, uint32_t arm_id);
 void VisionUart_Abort(void);
 

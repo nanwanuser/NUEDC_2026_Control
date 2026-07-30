@@ -30,7 +30,7 @@ AA 55 | version | type | seq | payload_length | payload | crc16 | 0D 0A
 payload开头为：
 
 ```text
-decision_mode uint8_t  // 0: fixed ID, 1: general
+reserved      uint8_t  // 原decision_mode，接收端忽略，填0即可
 piece_count   uint8_t  // 1..4
 ```
 
@@ -63,9 +63,9 @@ payload状态值：
 
 ## 稳定确认
 
-STM32连续收到3个相近的有效帧才提交决策。模式、碎片数量、ID和顶点数量必须
-完全相同，中心和顶点坐标允许相差0.5 mm。比较时按ID匹配碎片，并自动处理顶点
-起点循环变化和顺逆时针变化。最终坐标取3帧平均值。
+STM32连续收到3个相近的有效帧才提交决策。碎片数量、ID和顶点数量必须完全相同，
+中心和顶点坐标允许相差0.5 mm。比较时按ID匹配碎片，并自动处理顶点起点循环变化
+和顺逆时针变化。最终坐标取3帧平均值。
 
 确认后STM32停止USART1接收，调用`DecisionTask_Submit()`，仅在决策确实接收后才发送
 状态1的ACK（失败发状态2），最后反初始化USART1。
@@ -74,10 +74,6 @@ STM32连续收到3个相近的有效帧才提交决策。模式、碎片数量�
 
 视觉任务上电后不主动接收，`VisionUart_Arm()`被调用才打开接收器。题目要求先
 遮挡摄像头摆放碎片、按键启动时同时移除遮挡，因此启动键之前到达的帧会被丢弃。
-决策模式由按键决定，不使用视觉帧里的`decision_mode`字段。
 
 每次`VisionUart_Arm()`会在必要时重新初始化USART1，所以一轮提交后仍可再次武装，
 反复测试不需要重新上电。`VisionUart_Abort()`放弃当前采集。
-
-固定ID模式使用前，应用必须调用`VisionUart_SetFixedLayout()`配置目标模板；
-通用模式不需要模板。

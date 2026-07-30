@@ -47,7 +47,6 @@ static const MissionKeyBinding Mission_KeyBindings[MISSION_KEY_COUNT] = {
 
 static key_handle_t Mission_Keys[MISSION_KEY_COUNT];
 static buzzer_handle_t Mission_Buzzer;
-static DecisionFixedLayout Mission_FixedLayout;
 static volatile MissionOutput Mission_Output;
 static volatile MissionId Mission_StartRequest;
 static volatile uint8_t Mission_AbortRequest;
@@ -88,7 +87,6 @@ void Mission_Init(void)
     buzzer_config_t buzzer_config;
     uint32_t index;
 
-    (void)memset(&Mission_FixedLayout, 0, sizeof(Mission_FixedLayout));
     Mission_StartRequest = MISSION_NONE;
     Mission_AbortRequest = 0U;
     Mission_NextRunId = 1U;
@@ -131,22 +129,6 @@ void Mission_Init(void)
     output.trajectory_result = TRAJECTORY_RESULT_OK;
     output.crane_status = CRANE_CONTROL_OK;
     Mission_Output = output;
-}
-
-uint8_t Mission_SetFixedLayout(const DecisionFixedLayout *layout)
-{
-    if (layout == NULL || layout->piece_count == 0U ||
-        layout->piece_count > DECISION_MAX_PIECES) {
-        return 0U;
-    }
-
-    Mission_FixedLayout = *layout;
-    return 1U;
-}
-
-void Mission_ClearFixedLayout(void)
-{
-    (void)memset(&Mission_FixedLayout, 0, sizeof(Mission_FixedLayout));
 }
 
 uint8_t Mission_Start(MissionId mission)
@@ -212,11 +194,6 @@ static void build_request(MissionId mission, DecisionTaskRequest *request)
     /* The first waypoint has to be where the crane actually is. */
     CraneControl_GetCurrentPose(&request->execution.current_pose);
 
-    /* Both missions solve the same geometry; a registered template just makes
-       the solve a per-ID registration instead of an edge-matching search. */
-    request->mode = Mission_FixedLayout.piece_count > 0U
-        ? DECISION_MODE_FIXED_ID
-        : DECISION_MODE_GENERAL;
 }
 
 static uint8_t arm_mission(MissionId mission, uint32_t run_id)
@@ -233,10 +210,6 @@ static uint8_t arm_mission(MissionId mission, uint32_t run_id)
     }
 
     build_request(mission, &request);
-    if (request.mode == DECISION_MODE_FIXED_ID &&
-        VisionUart_SetFixedLayout(&Mission_FixedLayout) == 0U) {
-        return 0U;
-    }
     return VisionUart_Arm(&request, run_id);
 }
 

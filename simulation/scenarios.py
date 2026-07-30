@@ -1,4 +1,4 @@
-"""Deterministic built-in scenes for both decision modes."""
+"""Deterministic built-in scene for the decision search."""
 
 from __future__ import annotations
 
@@ -9,11 +9,8 @@ from typing import Mapping, Sequence
 import numpy as np
 
 from simulation.bindings import (
-    DECISION_MODE_FIXED_ID,
-    DECISION_MODE_GENERAL,
     DECISION_RESULT_OK,
     DecisionConfig,
-    DecisionFixedLayout,
     DecisionPlan,
     DecisionPoint,
     DecisionVisionFrame,
@@ -36,15 +33,12 @@ TRANSLATIONS_MM = (
     (45.0, 105.0),
     (165.0, 115.0),
 )
-TARGET_OFFSET_MM = np.array([55.0, 190.0])
 
 
 @dataclass(frozen=True)
 class Scenario:
     name: str
-    mode: int
     frame: DecisionVisionFrame
-    fixed_layout: DecisionFixedLayout
     config: DecisionConfig
     home: TrajectoryPose
     limits: TrajectoryLimits
@@ -84,47 +78,21 @@ def _build_frame() -> DecisionVisionFrame:
     return frame
 
 
-def _build_fixed_layout() -> tuple[DecisionFixedLayout, dict[int, np.ndarray]]:
-    layout = DecisionFixedLayout()
-    layout.piece_count = 4
-    targets: dict[int, np.ndarray] = {}
-
-    for index, base_polygon in enumerate(BASE_POLYGONS):
-        piece_id = 10 + index
-        vertices = np.asarray(base_polygon, dtype=float) + TARGET_OFFSET_MM
-        target = layout.pieces[index]
-        target.id = piece_id
-        target.vertex_count = len(base_polygon)
-        for vertex_index, vertex in enumerate(vertices):
-            _fill_point(target.target_vertices[vertex_index], vertex)
-        targets[piece_id] = vertices
-    return layout, targets
-
-
-def create_scenario(mode: str) -> Scenario:
-    """Create a fixed-ID or general-mode built-in scene."""
-
-    if mode not in ("fixed", "general"):
-        raise ValueError(f"Unsupported simulation mode: {mode}")
+def create_scenario(name: str = "general") -> Scenario:
+    """Create the built-in scene. Every contest task assembles pieces the device
+    has not seen before, so there is only the edge-matching search to exercise."""
 
     library = load_library()
     config = DecisionConfig()
     library.Decision_GetDefaultConfig(ctypes.byref(config))
-    frame = _build_frame()
-    fixed_layout, targets = _build_fixed_layout()
-    decision_mode = (
-        DECISION_MODE_FIXED_ID if mode == "fixed" else DECISION_MODE_GENERAL
-    )
 
     return Scenario(
-        name=mode,
-        mode=decision_mode,
-        frame=frame,
-        fixed_layout=fixed_layout,
+        name=name,
+        frame=_build_frame(),
         config=config,
         home=TrajectoryPose(105.0, 120.0, 60.0, 0.0),
         limits=TrajectoryLimits(120.0, 300.0, 90.0, 240.0),
-        target_polygons=targets if mode == "fixed" else {},
+        target_polygons={},
     )
 
 
@@ -133,9 +101,7 @@ def solve_scenario(scenario: Scenario) -> DecisionPlan:
 
     plan = DecisionPlan()
     result = load_library().Decision_Solve(
-        scenario.mode,
         ctypes.byref(scenario.frame),
-        ctypes.byref(scenario.fixed_layout),
         ctypes.byref(scenario.config),
         ctypes.byref(plan),
     )

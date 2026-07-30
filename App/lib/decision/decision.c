@@ -313,122 +313,6 @@ static DecisionPoint find_grasp_point(const DecisionPiece *piece)
     return best;
 }
 
-static uint8_t fit_rigid_transform(const DecisionPoint *source,
-                                   const DecisionPoint *target,
-                                   uint8_t count,
-                                   RigidTransform *transform,
-                                   float *root_mean_square_error)
-{
-    DecisionPoint source_center = {0.0f, 0.0f};
-    DecisionPoint target_center = {0.0f, 0.0f};
-    float cosine_sum = 0.0f;
-    float sine_sum = 0.0f;
-    float norm;
-    float squared_error = 0.0f;
-    uint8_t index;
-
-    for (index = 0U; index < count; ++index) {
-        source_center.x_mm += source[index].x_mm;
-        source_center.y_mm += source[index].y_mm;
-        target_center.x_mm += target[index].x_mm;
-        target_center.y_mm += target[index].y_mm;
-    }
-    source_center.x_mm /= (float)count;
-    source_center.y_mm /= (float)count;
-    target_center.x_mm /= (float)count;
-    target_center.y_mm /= (float)count;
-
-    for (index = 0U; index < count; ++index) {
-        DecisionPoint source_offset = point_subtract(source[index], source_center);
-        DecisionPoint target_offset = point_subtract(target[index], target_center);
-        cosine_sum += source_offset.x_mm * target_offset.x_mm +
-                      source_offset.y_mm * target_offset.y_mm;
-        sine_sum += source_offset.x_mm * target_offset.y_mm -
-                    source_offset.y_mm * target_offset.x_mm;
-    }
-
-    norm = sqrtf(square(cosine_sum) + square(sine_sum));
-    if (norm <= DECISION_GEOMETRY_EPSILON_MM) {
-        return 0U;
-    }
-
-    transform->cosine = cosine_sum / norm;
-    transform->sine = sine_sum / norm;
-    transform->tx = target_center.x_mm -
-        (transform->cosine * source_center.x_mm -
-         transform->sine * source_center.y_mm);
-    transform->ty = target_center.y_mm -
-        (transform->sine * source_center.x_mm +
-         transform->cosine * source_center.y_mm);
-
-    for (index = 0U; index < count; ++index) {
-        DecisionPoint mapped = transform_point(transform, source[index]);
-        squared_error += square(mapped.x_mm - target[index].x_mm) +
-                         square(mapped.y_mm - target[index].y_mm);
-    }
-
-    *root_mean_square_error = sqrtf(squared_error / (float)count);
-    return (uint8_t)isfinite(*root_mean_square_error);
-}
-
-static uint8_t find_best_fixed_transform(const DecisionPiece *piece,
-                                         const DecisionFixedPiece *target,
-                                         RigidTransform *best_transform,
-                                         float *best_error)
-{
-    DecisionPoint correspondence[DECISION_MAX_VERTICES];
-    uint8_t direction_index;
-    uint8_t shift;
-
-    *best_error = FLT_MAX;
-    for (direction_index = 0U; direction_index < 2U; ++direction_index) {
-        int32_t direction = direction_index == 0U ? 1 : -1;
-        for (shift = 0U; shift < piece->vertex_count; ++shift) {
-            RigidTransform candidate;
-            float error;
-            uint8_t vertex_index;
-
-            for (vertex_index = 0U;
-                 vertex_index < piece->vertex_count;
-                 ++vertex_index) {
-                int32_t target_index = (int32_t)shift +
-                                       direction * (int32_t)vertex_index;
-                while (target_index < 0) {
-                    target_index += piece->vertex_count;
-                }
-                target_index %= piece->vertex_count;
-                correspondence[vertex_index] =
-                    target->target_vertices[target_index];
-            }
-
-            if (fit_rigid_transform(piece->vertices,
-                                    correspondence,
-                                    piece->vertex_count,
-                                    &candidate,
-                                    &error) != 0U &&
-                error < *best_error) {
-                *best_error = error;
-                *best_transform = candidate;
-            }
-        }
-    }
-    return (uint8_t)(*best_error < FLT_MAX);
-}
-
-static const DecisionFixedPiece *find_fixed_piece(
-    const DecisionFixedLayout *layout,
-    uint8_t id)
-{
-    uint8_t index;
-
-    for (index = 0U; index < layout->piece_count; ++index) {
-        if (layout->pieces[index].id == id) {
-            return &layout->pieces[index];
-        }
-    }
-    return NULL;
-}
-
 static void fill_move(const DecisionPiece *piece,
                       DecisionPoint grasp,
                       DecisionPoint place,
@@ -952,73 +836,6 @@ void Decision_GetDefaultConfig(DecisionConfig *config)
     config->max_search_nodes = DECISION_DEFAULT_MAX_NODES;
 }
 
-DecisionResult Decision_SolveFixed(const DecisionVisionFrame *frame,
-                                   const DecisionFixedLayout *layout,
-                                   const DecisionConfig *config,
-                                   DecisionPlan *plan)
-{
-    DecisionPiece pieces[DECISION_MAX_PIECES];
-    uint8_t piece_index;
-
-    if (frame == NULL || layout == NULL || plan == NULL ||
-        config_is_valid(config) == 0U ||
-        layout->piece_count == 0U ||
-        layout->piece_count > DECISION_MAX_PIECES) {
-        return DECISION_RESULT_INVALID_ARGUMENT;
-    }
-    if (normalize_frame(frame, pieces) == 0U) {
-        return DECISION_RESULT_INVALID_FRAME;
-    }
-
-    (void)memset(plan, 0, sizeof(*plan));
-    plan->seq = frame->seq;
-    for (piece_index = 0U; piece_index < frame->piece_count; ++piece_index) {
-        const DecisionFixedPiece *target =
-            find_fixed_piece(layout, pieces[piece_index].id);
-        RigidTransform transform;
-        DecisionPoint grasp;
-        DecisionPoint place;
-        float error;
-        float rotation_deg;
-        uint8_t target_vertex_index;
-
-        if (target == NULL) {
-            return DECISION_RESULT_TEMPLATE_NOT_FOUND;
-        }
-        if (target->vertex_count != pieces[piece_index].vertex_count) {
-            return DECISION_RESULT_TEMPLATE_MISMATCH;
-        }
-        for (target_vertex_index = 0U;
-             target_vertex_index < target->vertex_count;
-             ++target_vertex_index) {
-            if (!point_is_finite(target->target_vertices[target_vertex_index])) {
-                return DECISION_RESULT_TEMPLATE_MISMATCH;
-            }
-        }
-
-        if (find_best_fixed_transform(&pieces[piece_index],
-                                      target,
-                                      &transform,
-                                      &error) == 0U ||
-            error > config->edge_length_tolerance_mm) {
-            return DECISION_RESULT_TEMPLATE_MISMATCH;
-        }
-
-        grasp = find_grasp_point(&pieces[piece_index]);
-        place = transform_point(&transform, grasp);
-        rotation_deg = atan2f(transform.sine, transform.cosine) *
-                       180.0f / DECISION_PI;
-        fill_move(&pieces[piece_index],
-                  grasp,
-                  place,
-                  rotation_deg,
-                  config,
-                  &plan->moves[plan->move_count]);
-        ++plan->move_count;
-    }
-    return DECISION_RESULT_OK;
-}
-
 DecisionResult Decision_SolveGeneral(const DecisionVisionFrame *frame,
                                      const DecisionConfig *config,
                                      DecisionPlan *plan)
@@ -1094,19 +911,11 @@ DecisionResult Decision_SolveGeneral(const DecisionVisionFrame *frame,
     return DECISION_RESULT_OK;
 }
 
-DecisionResult Decision_Solve(DecisionMode mode,
-                              const DecisionVisionFrame *frame,
-                              const DecisionFixedLayout *fixed_layout,
+DecisionResult Decision_Solve(const DecisionVisionFrame *frame,
                               const DecisionConfig *config,
                               DecisionPlan *plan)
 {
-    if (mode == DECISION_MODE_FIXED_ID) {
-        return Decision_SolveFixed(frame, fixed_layout, config, plan);
-    }
-    if (mode == DECISION_MODE_GENERAL) {
-        return Decision_SolveGeneral(frame, config, plan);
-    }
-    return DECISION_RESULT_INVALID_ARGUMENT;
+    return Decision_SolveGeneral(frame, config, plan);
 }
 
 /* Coincident waypoints would insert a needless full stop, so drop them. */

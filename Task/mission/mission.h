@@ -51,13 +51,6 @@ typedef struct {
 
 void Mission_Init(void);
 
-/* Optional known-geometry template, matched by piece ID. Registering one
-   switches both missions to fixed-ID registration, which is faster and more
-   accurate but only works for the pieces in the template. Leave it unset for
-   venue-supplied pieces. */
-uint8_t Mission_SetFixedLayout(const DecisionFixedLayout *layout);
-void Mission_ClearFixedLayout(void);
-
 /* Same effect as pressing the matching key, for host or debug triggering. */
 uint8_t Mission_Start(MissionId mission);
 void Mission_Abort(void);

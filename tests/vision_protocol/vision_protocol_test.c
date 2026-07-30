@@ -29,7 +29,7 @@ static void write_u16(uint8_t *data, uint16_t value)
 }
 
 static size_t encode_frame(uint16_t seq,
-                           DecisionMode mode,
+                           uint8_t reserved,
                            const RawPiece *pieces,
                            uint8_t piece_count,
                            uint8_t *buffer)
@@ -50,7 +50,7 @@ static size_t encode_frame(uint16_t seq,
     buffer[3] = VISION_PROTOCOL_TYPE_FRAME;
     write_u16(&buffer[4], seq);
     write_u16(&buffer[6], payload_length);
-    buffer[position++] = (uint8_t)mode;
+    buffer[position++] = reserved;
     buffer[position++] = piece_count;
 
     for (piece_index = 0U; piece_index < piece_count; ++piece_index) {
@@ -111,15 +111,15 @@ static int test_decode_four_pieces(void)
     uint8_t frame[VISION_PROTOCOL_MAX_FRAME_LENGTH];
     VisionProtocolParser parser;
     VisionProtocolPacket packet;
-    size_t length = encode_frame(42U, DECISION_MODE_GENERAL,
-                                 pieces, 4U, frame);
+    /* Non-zero reserved byte: the decoder must accept and carry it. */
+    size_t length = encode_frame(42U, 0x5AU, pieces, 4U, frame);
 
     VisionProtocolParser_Init(&parser);
     ASSERT_TRUE(length <= VISION_PROTOCOL_MAX_FRAME_LENGTH);
     ASSERT_TRUE(feed(&parser, frame, length, &packet) ==
                 VISION_PROTOCOL_RESULT_FRAME);
     ASSERT_TRUE(packet.seq == 42U);
-    ASSERT_TRUE(packet.mode == DECISION_MODE_GENERAL);
+    ASSERT_TRUE(packet.reserved == 0x5AU);
     ASSERT_TRUE(packet.frame.piece_count == 4U);
     ASSERT_TRUE(packet.frame.pieces[2].vertex_count == 5U);
     ASSERT_TRUE(fabsf(packet.frame.pieces[2].center.x_mm + 10.0f) < 0.001f);
@@ -132,14 +132,14 @@ static int test_crc_and_end_rejected(void)
     uint8_t frame[VISION_PROTOCOL_MAX_FRAME_LENGTH];
     VisionProtocolParser parser;
     VisionProtocolPacket packet;
-    size_t length = encode_frame(1U, DECISION_MODE_GENERAL, &piece, 1U, frame);
+    size_t length = encode_frame(1U, 0U, &piece, 1U, frame);
 
     frame[10] ^= 1U;
     VisionProtocolParser_Init(&parser);
     ASSERT_TRUE(feed(&parser, frame, length, &packet) ==
                 VISION_PROTOCOL_RESULT_CRC_ERROR);
 
-    (void)encode_frame(1U, DECISION_MODE_GENERAL, &piece, 1U, frame);
+    (void)encode_frame(1U, 0U, &piece, 1U, frame);
     frame[length - 1U] = 0U;
     VisionProtocolParser_Init(&parser);
     ASSERT_TRUE(feed(&parser, frame, length, &packet) ==
@@ -164,8 +164,9 @@ static int test_three_stable_frames(void)
     VisionProtocolParser_Init(&parser);
     VisionProtocolStabilizer_Init(&stabilizer);
     for (index = 0U; index < 3U; ++index) {
+        /* Reserved differs per frame: the stabilizer must not compare it. */
         size_t length = encode_frame((uint16_t)(10U + index),
-                                     DECISION_MODE_GENERAL,
+                                     index,
                                      &samples[index], 1U, frame);
         ASSERT_TRUE(feed(&parser, frame, length, &packet) ==
                     VISION_PROTOCOL_RESULT_FRAME);

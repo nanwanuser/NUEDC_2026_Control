@@ -24,7 +24,6 @@ static volatile uint8_t VisionUart_Receiving;
 static volatile uint8_t VisionUart_RxOverflow;
 static volatile uint32_t VisionUart_DroppedBytes;
 static volatile VisionUartOutput VisionUart_Output;
-static DecisionFixedLayout VisionUart_FixedLayout;
 static volatile DecisionTaskRequest VisionUart_ArmedRequest;
 static volatile uint32_t VisionUart_ArmedId;
 static volatile uint8_t VisionUart_ArmPending;
@@ -113,7 +112,6 @@ void VisionUart_Init(void)
     VisionUart_ArmPending = 0U;
     VisionUart_AbortRequested = 0U;
     VisionUart_ArmedId = 0U;
-    (void)memset(&VisionUart_FixedLayout, 0, sizeof(VisionUart_FixedLayout));
     (void)memset((void *)&VisionUart_ArmedRequest, 0,
                  sizeof(VisionUart_ArmedRequest));
     (void)memset(&output, 0, sizeof(output));
@@ -143,35 +141,6 @@ void VisionUart_Abort(void)
     VisionUart_ArmPending = 0U;
     VisionUart_AbortRequested = 1U;
     taskEXIT_CRITICAL();
-}
-
-uint8_t VisionUart_SetFixedLayout(const DecisionFixedLayout *layout)
-{
-    uint8_t index;
-
-    if (layout == NULL || layout->piece_count == 0U ||
-        layout->piece_count > DECISION_MAX_PIECES ||
-        VisionUart_Receiving != 0U) {
-        return 0U;
-    }
-    for (index = 0U; index < layout->piece_count; ++index) {
-        uint8_t previous_index;
-
-        if (layout->pieces[index].vertex_count < 3U ||
-            layout->pieces[index].vertex_count > DECISION_MAX_VERTICES) {
-            return 0U;
-        }
-        for (previous_index = 0U;
-             previous_index < index;
-             ++previous_index) {
-            if (layout->pieces[previous_index].id == layout->pieces[index].id) {
-                return 0U;
-            }
-        }
-    }
-
-    VisionUart_FixedLayout = *layout;
-    return 1U;
 }
 
 void VisionUart_GetOutput(VisionUartOutput *output)
@@ -274,25 +243,12 @@ void VisionUart_App(void *argument)
                                                  &stable_packet) != 0U) {
                     DecisionTaskRequest request;
 
-                    /* The mission that armed this run owns the mode, so a
-                       fixed-ID run without a template is rejected outright. */
-                    if (base_request.mode == DECISION_MODE_FIXED_ID &&
-                        VisionUart_FixedLayout.piece_count == 0U) {
-                        send_ack(packet.seq, VISION_PROTOCOL_ACK_INVALID);
-                        VisionProtocolStabilizer_Reset(&stabilizer);
-                        output.stable_count = 0U;
-                        ++output.invalid_frame_count;
-                        publish_output(&output);
-                        continue;
-                    }
-
                     output.stable_count = stabilizer.stable_count;
                     output.state = VISION_UART_STATE_STABLE;
                     publish_output(&output);
 
                     request = base_request;
                     request.vision = stable_packet.frame;
-                    request.fixed_layout = VisionUart_FixedLayout;
                     stop_receive();
                     /* Only claim acceptance once the decision really took the
                        request, so the vision host is not told to stop sending

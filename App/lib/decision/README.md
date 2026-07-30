@@ -15,13 +15,13 @@ piece[].vertices[].x/y      -> DecisionPiece.vertices
 视觉数据不需要提供 `yaw`。决策模块根据多边形顶点计算刚体旋转。
 顶点允许顺时针或逆时针输入，但必须沿轮廓依次排列，不能交叉或乱序。
 
-## 两种模式
+## 求解方式
 
-`DECISION_MODE_FIXED_ID`：按照 `id` 查找 `DecisionFixedLayout` 中的目标顶点，
-对当前顶点和目标顶点做刚体配准。目标顶点使用纸面毫米坐标，因此目标矩形的
-位置也由模板直接确定。
+题目的三项计分任务里，第 1(1)、1(2) 用选手自备碎片，第 2(1)、2(2) 用测评现场
+提供的碎片——现场碎片的形状事先不可知，因此不存在可以预置的模板。原先的
+固定 ID 模式已删除，只保留边匹配搜索。
 
-`DECISION_MODE_GENERAL`：枚举长度接近的候选边，反向对齐后回溯拼接，并检查：
+`Decision_Solve()` 枚举长度接近的候选边，反向对齐后回溯拼接，并检查：
 
 - 碎片不重叠；
 - 面积接近外接矩形面积；
@@ -64,7 +64,6 @@ transit.z   = config.transit_z_mm
 DecisionTaskRequest request;
 
 DecisionTask_GetDefaultRequest(&request);
-request.mode = DECISION_MODE_GENERAL;
 request.vision = vision_frame;
 request.config.target_center.x_mm = 105.0f;
 request.config.target_center.y_mm = 220.0f;
@@ -73,8 +72,8 @@ request.execution.current_pose = robot_current_pose;
 DecisionTask_Submit(&request);
 ```
 
-固定模式还需要填写 `request.fixed_layout`。模板的顶点起点和绕行方向可以与
-视觉输出不同，模块会自动尝试循环移位和反向匹配。
+实际使用中 `target_center` 和 Z 高度由 `Task/mission` 从吊臂配置推导，不要
+在这里写死，见 `Task/crane_control/README.md`。
 
 ## 轨迹接入
 

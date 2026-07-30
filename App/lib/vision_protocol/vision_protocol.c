@@ -84,12 +84,13 @@ static VisionProtocolResult decode_frame(const uint8_t *data,
 
     (void)memset(packet, 0, sizeof(*packet));
     packet->seq = read_u16_le(&data[4]);
-    packet->mode = (DecisionMode)data[8];
+    /* data[8] used to select the solve mode. Every task now uses the same
+       edge-matching solve, so it is accepted and ignored rather than removed:
+       dropping the byte would change the frame layout for the vision host. */
+    packet->reserved = data[8];
     packet->frame.seq = packet->seq;
     packet->frame.piece_count = data[9];
-    if ((packet->mode != DECISION_MODE_FIXED_ID &&
-         packet->mode != DECISION_MODE_GENERAL) ||
-        packet->frame.piece_count == 0U ||
+    if (packet->frame.piece_count == 0U ||
         packet->frame.piece_count > DECISION_MAX_PIECES) {
         return VISION_PROTOCOL_RESULT_INVALID_DATA;
     }
@@ -313,8 +314,7 @@ static uint8_t align_packet(const VisionProtocolPacket *reference,
 {
     uint8_t piece_index;
 
-    if (reference->mode != incoming->mode ||
-        reference->frame.piece_count != incoming->frame.piece_count) {
+    if (reference->frame.piece_count != incoming->frame.piece_count) {
         return 0U;
     }
 

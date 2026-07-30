@@ -14,8 +14,6 @@ TRAJECTORY_COEFFICIENT_COUNT = 6
 TRAJECTORY_MAX_WAYPOINTS = 6
 TRAJECTORY_MAX_SEGMENTS = TRAJECTORY_MAX_WAYPOINTS - 1
 
-DECISION_MODE_FIXED_ID = 0
-DECISION_MODE_GENERAL = 1
 DECISION_RESULT_OK = 0
 
 TRAJECTORY_PHASE_APPROACH = 0
@@ -112,21 +110,6 @@ class DecisionVisionFrame(ctypes.Structure):
     ]
 
 
-class DecisionFixedPiece(ctypes.Structure):
-    _fields_ = [
-        ("id", ctypes.c_uint8),
-        ("vertex_count", ctypes.c_uint8),
-        ("target_vertices", DecisionPoint * DECISION_MAX_VERTICES),
-    ]
-
-
-class DecisionFixedLayout(ctypes.Structure):
-    _fields_ = [
-        ("piece_count", ctypes.c_uint8),
-        ("pieces", DecisionFixedPiece * DECISION_MAX_PIECES),
-    ]
-
-
 class DecisionConfig(ctypes.Structure):
     _fields_ = [
         ("target_center", DecisionPoint),
@@ -171,9 +154,7 @@ def _configure_library(library: ctypes.CDLL) -> None:
     library.Decision_GetDefaultConfig.argtypes = [ctypes.POINTER(DecisionConfig)]
     library.Decision_GetDefaultConfig.restype = None
     library.Decision_Solve.argtypes = [
-        ctypes.c_int,
         ctypes.POINTER(DecisionVisionFrame),
-        ctypes.POINTER(DecisionFixedLayout),
         ctypes.POINTER(DecisionConfig),
         ctypes.POINTER(DecisionPlan),
     ]

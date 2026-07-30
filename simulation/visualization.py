@@ -7,10 +7,9 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import Polygon
-from matplotlib.widgets import Button, RadioButtons, Slider
+from matplotlib.widgets import Button, Slider
 
-from simulation.scenarios import create_scenario
-from simulation.simulator import SimulationResult, run_simulation
+from simulation.simulator import SimulationResult
 
 
 PIECE_COLORS = ("#0072B2", "#E69F00", "#009E73", "#CC79A7")
@@ -55,13 +54,10 @@ class SimulationView:
         return float(self.result.samples[-1].time_s)
 
     def _create_controls(self) -> None:
-        radio_ax = self.figure.add_axes((0.025, 0.025, 0.11, 0.105))
         play_ax = self.figure.add_axes((0.16, 0.075, 0.075, 0.04))
         reset_ax = self.figure.add_axes((0.245, 0.075, 0.075, 0.04))
         slider_ax = self.figure.add_axes((0.37, 0.082, 0.57, 0.028))
 
-        active = 0 if self.result.scenario.name == "fixed" else 1
-        self.mode_radio = RadioButtons(radio_ax, ("Fixed ID", "General"), active=active)
         self.play_button = Button(play_ax, "Play")
         self.reset_button = Button(reset_ax, "Reset")
         self.time_slider = Slider(
@@ -71,7 +67,6 @@ class SimulationView:
             self.duration_s,
             valinit=0.0,
         )
-        self.mode_radio.on_clicked(self._on_mode_selected)
         self.play_button.on_clicked(lambda _event: self.toggle_play())
         self.reset_button.on_clicked(lambda _event: self.reset())
         self.time_slider.on_changed(self._on_slider_changed)
@@ -120,11 +115,7 @@ class SimulationView:
         axis.set_aspect("equal", adjustable="box")
         axis.set_xlabel("X (mm)", fontsize=9)
         axis.set_ylabel("Y (mm)", fontsize=9)
-        axis.set_title(
-            f"Decision Board | {self.result.scenario.name.title()} mode",
-            fontsize=11,
-            fontweight="bold",
-        )
+        axis.set_title("Decision Board", fontsize=11, fontweight="bold")
 
         for piece_index, execution in enumerate(self.result.moves):
             piece_id = execution.piece_id
@@ -333,10 +324,6 @@ class SimulationView:
         if not self._updating_slider:
             self.set_time(float(value), update_slider=False)
 
-    def _on_mode_selected(self, label: str) -> None:
-        mode = "fixed" if label == "Fixed ID" else "general"
-        self.set_mode(mode)
-
     def _on_timer(self) -> None:
         if not self.playing:
             return
@@ -358,19 +345,6 @@ class SimulationView:
     def reset(self) -> None:
         if self.playing:
             self.toggle_play()
-        self.set_time(0.0)
-
-    def set_mode(self, mode: str) -> None:
-        if mode == self.result.scenario.name:
-            return
-        if self.playing:
-            self.toggle_play()
-        self.result = run_simulation(create_scenario(mode))
-        self._piece_patches.clear()
-        self._piece_labels.clear()
-        self._draw_result()
-        self.time_slider.valmax = self.duration_s
-        self.time_slider.ax.set_xlim(0.0, self.duration_s)
         self.set_time(0.0)
 
     def _sample_index(self, time_s: float) -> int:
@@ -423,7 +397,6 @@ class SimulationView:
 
         state_name = "Complete" if sample.state == 1 else "Running"
         self.status_text.set_text(
-            f"Mode: {self.result.scenario.name.title()}  |  "
             f"Piece: {sample.piece_id} ({sample.move_index + 1}/4)  |  "
             f"Phase: {sample.phase.title()}  |  State: {state_name}  |  "
             f"Grip: {sample.grip}  |  t={self.current_time:.2f}s"

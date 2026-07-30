@@ -141,9 +141,7 @@ void Decision_App(void *argument)
             copy_request(&request);
             RoutePlanning_Cancel();
             (void)memset(&output, 0, sizeof(output));
-            output.result = Decision_Solve(request.mode,
-                                           &request.vision,
-                                           &request.fixed_layout,
+            output.result = Decision_Solve(&request.vision,
                                            &request.config,
                                            &output.plan);
             output.trajectory_result = TRAJECTORY_RESULT_INVALID_ARGUMENT;

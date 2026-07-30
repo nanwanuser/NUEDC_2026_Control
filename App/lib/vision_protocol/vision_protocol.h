@@ -43,7 +43,8 @@ typedef enum {
 
 typedef struct {
     uint16_t seq;
-    DecisionMode mode;
+    /* The frame's former mode byte, kept so the wire layout is unchanged. */
+    uint8_t reserved;
     DecisionVisionFrame frame;
 } VisionProtocolPacket;
 

@@ -28,9 +28,7 @@ typedef enum {
 } DecisionExecutionState;
 
 typedef struct {
-    DecisionMode mode;
     DecisionVisionFrame vision;
-    DecisionFixedLayout fixed_layout;
     DecisionConfig config;
     DecisionExecutionConfig execution;
 } DecisionTaskRequest;
