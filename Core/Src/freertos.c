@@ -64,7 +64,7 @@ const osThreadAttr_t Mission_attributes = {
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
-  .stack_size = 128 * 4,
+  .stack_size = 1024 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
 /* Definitions for Robot_arm_ctrl */
@@ -166,6 +166,8 @@ void StartDefaultTask(void *argument)
 {
   /* USER CODE BEGIN StartDefaultTask */
   (void)argument;
+
+  /* Vision acquisition is armed by the mission task on a key press. */
 
   /* Infinite loop */
   for(;;)

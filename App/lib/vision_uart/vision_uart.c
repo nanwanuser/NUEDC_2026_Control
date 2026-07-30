@@ -54,7 +54,7 @@ static uint8_t ring_pop(uint8_t *byte)
     return 1U;
 }
 
-static void start_receive(void)
+static uint8_t start_receive(void)
 {
     /* A previous run de-initialised USART1 after submitting, so bring the
        peripheral back up before every acquisition. */
@@ -66,6 +66,7 @@ static void start_receive(void)
     VisionUart_RxHead = 0U;
     VisionUart_RxTail = 0U;
     VisionUart_RxOverflow = 0U;
+    VisionUart_DroppedBytes = 0U;
     taskEXIT_CRITICAL();
 
     VisionUart_Receiving = 1U;
@@ -73,7 +74,9 @@ static void start_receive(void)
                                    VisionUart_RxChunk,
                                    VISION_UART_RX_CHUNK_SIZE) != HAL_OK) {
         VisionUart_Receiving = 0U;
+        return 0U;
     }
+    return 1U;
 }
 
 static void stop_receive(void)
@@ -218,10 +221,12 @@ void VisionUart_App(void *argument)
             output.stable_count = 0U;
             submitted = 0U;
             last_byte_tick = osKernelGetTickCount();
-            start_receive();
-            output.state = VisionUart_Receiving != 0U
-                ? VISION_UART_STATE_RECEIVING
-                : VISION_UART_STATE_ERROR;
+            if (start_receive() != 0U) {
+                output.state = VISION_UART_STATE_RECEIVING;
+            } else {
+                output.state = VISION_UART_STATE_ERROR;
+                submitted = 1U;
+            }
             publish_output(&output);
         }
 
@@ -285,18 +290,21 @@ void VisionUart_App(void *argument)
                     output.state = VISION_UART_STATE_STABLE;
                     publish_output(&output);
 
-                    stop_receive();
-                    send_ack(packet.seq, VISION_PROTOCOL_ACK_ACCEPTED);
-                    (void)HAL_UART_DeInit(&huart1);
-
                     request = base_request;
                     request.vision = stable_packet.frame;
                     request.fixed_layout = VisionUart_FixedLayout;
+                    stop_receive();
+                    /* Only claim acceptance once the decision really took the
+                       request, so the vision host is not told to stop sending
+                       after a failed handover. */
                     if (DecisionTask_Submit(&request) != 0U) {
                         output.state = VISION_UART_STATE_SUBMITTED;
+                        send_ack(packet.seq, VISION_PROTOCOL_ACK_ACCEPTED);
                     } else {
                         output.state = VISION_UART_STATE_ERROR;
+                        send_ack(packet.seq, VISION_PROTOCOL_ACK_INVALID);
                     }
+                    (void)HAL_UART_DeInit(&huart1);
                     submitted = 1U;
                 } else {
                     output.stable_count = stabilizer.stable_count;
@@ -319,6 +327,14 @@ void VisionUart_App(void *argument)
             VisionProtocolStabilizer_Reset(&stabilizer);
             output.stable_count = 0U;
             ++output.invalid_frame_count;
+            publish_output(&output);
+        }
+
+        /* HAL_UARTEx_ReceiveToIdle_IT can fail to re-arm inside the callback,
+           which would silently stall the acquisition, so surface it. */
+        if (VisionUart_Receiving == 0U) {
+            output.state = VISION_UART_STATE_ERROR;
+            submitted = 1U;
             publish_output(&output);
         }
 
