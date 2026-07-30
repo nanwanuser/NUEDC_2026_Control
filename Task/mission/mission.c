@@ -1,6 +1,7 @@
 #include "mission.h"
 
 #include "buzzer.h"
+#include "crane_control.h"
 #include "key.h"
 #include "route_planning.h"
 #include "vision_uart.h"
@@ -23,11 +24,15 @@
 #define MISSION_FAIL_BEEP_GAP_MS    150U
 #define MISSION_FAIL_BEEP_COUNT     3U
 
-/* The A4 sheet is portrait with its origin at the lower-left corner, so the
-   dividing line sits at half of 297 mm and the target rectangle is centred in
-   the lower half. */
-#define MISSION_SHEET_HEIGHT_MM     297.0f
-#define MISSION_SHEET_WIDTH_MM      210.0f
+/* The crane's frame is the authority on where things are: its origin sits at the
+   column, and the boom's zero heading points away from it. Rather than restate
+   the sheet's placement here, the target is derived from the reach the crane
+   actually has, so it is inside the workspace by construction.
+
+   The assembled rectangle needs its whole footprint reachable, so it goes at the
+   middle of the reach band, which is the only placement that leaves clearance at
+   both travel ends. With a 70-230 mm band that is r = 150 mm, and the largest
+   allowed rectangle has a 75 mm half-diagonal, so the fit is tight but real. */
 
 typedef struct {
     MissionId mission;
@@ -124,6 +129,7 @@ void Mission_Init(void)
     output.state = MISSION_STATE_IDLE;
     output.decision_result = DECISION_RESULT_OK;
     output.trajectory_result = TRAJECTORY_RESULT_OK;
+    output.crane_status = CRANE_CONTROL_OK;
     Mission_Output = output;
 }
 
@@ -179,12 +185,32 @@ void Mission_GetOutput(MissionOutput *output)
    measured piece polygons. */
 static void build_request(MissionId mission, DecisionTaskRequest *request)
 {
+    CraneControlConfig crane_config;
+    TrajectoryPose target_pose;
+
     (void)mission;
     DecisionTask_GetDefaultRequest(request);
+    CraneControl_GetConfig(&crane_config);
 
-    /* Every mission targets the lower half of the portrait A4 sheet. */
-    request->config.target_center.x_mm = 0.5f * MISSION_SHEET_WIDTH_MM;
-    request->config.target_center.y_mm = 0.25f * MISSION_SHEET_HEIGHT_MM;
+    /* Place the target on the boom's zero heading at the middle of the reach, so
+       the rectangle is centred in the sweep and every piece is a boom turn away
+       from it. Expressing it as a pose keeps the frame conversion in the crane
+       module, which owns it. */
+    CraneControl_GetPoseAt(0.0f,
+                           0.5f * (crane_config.min_radius_mm +
+                                   crane_config.max_radius_mm),
+                           crane_config.min_z_mm,
+                           &target_pose);
+    request->config.target_center.x_mm = target_pose.x_mm;
+    request->config.target_center.y_mm = target_pose.y_mm;
+
+    /* The crane's lift is a two-position servo, so the planner's transit height
+       has to be the crane's own travel height rather than a nominal 40 mm. */
+    request->config.pick_z_mm = crane_config.min_z_mm;
+    request->config.place_z_mm = crane_config.min_z_mm;
+    request->config.transit_z_mm = crane_config.max_z_mm;
+    /* The first waypoint has to be where the crane actually is. */
+    CraneControl_GetCurrentPose(&request->execution.current_pose);
 
     /* Both missions solve the same geometry; a registered template just makes
        the solve a per-ID registration instead of an edge-matching search. */
@@ -196,6 +222,15 @@ static void build_request(MissionId mission, DecisionTaskRequest *request)
 static uint8_t arm_mission(MissionId mission, uint32_t run_id)
 {
     DecisionTaskRequest request;
+    CraneControlState crane_state;
+
+    /* The crane task parks the boom before it accepts references. Starting ahead
+       of that would submit a plan nothing executes, and the run would burn the
+       whole time limit before anyone noticed. */
+    CraneControl_GetState(&crane_state);
+    if (crane_state.initialized == 0U) {
+        return 0U;
+    }
 
     build_request(mission, &request);
     if (request.mode == DECISION_MODE_FIXED_ID &&
@@ -291,6 +326,7 @@ void Mission_App(void *argument)
             output.run_id = next_run_id();
             output.decision_result = DECISION_RESULT_OK;
             output.trajectory_result = TRAJECTORY_RESULT_OK;
+            output.crane_status = CRANE_CONTROL_OK;
             run_start_tick = now_tick;
 
             RoutePlanning_Cancel();
@@ -323,21 +359,30 @@ void Mission_App(void *argument)
                 signal_failure();
             }
         } else if (output.state == MISSION_STATE_RUNNING) {
+            CraneControlState crane_state;
+
             output.elapsed_ms = elapsed_ms(run_start_tick, now_tick);
             taskENTER_CRITICAL();
             decision_output = DecisionTask_Output;
             taskEXIT_CRITICAL();
+            CraneControl_GetState(&crane_state);
 
             output.decision_result = decision_output.result;
             output.trajectory_result = decision_output.trajectory_result;
             output.piece_count = decision_output.plan.move_count;
             output.placed_count = decision_output.active_move_index;
+            output.crane_status = crane_state.status;
 
             if (decision_output.execution_state == DECISION_EXECUTION_COMPLETE) {
                 output.placed_count = decision_output.plan.move_count;
                 output.state = MISSION_STATE_COMPLETE;
             } else if (decision_output.execution_state ==
                        DECISION_EXECUTION_ERROR) {
+                output.state = MISSION_STATE_FAILED;
+            } else if (crane_state.status != CRANE_CONTROL_OK) {
+                /* The crane refused a reference, so the arm is no longer
+                   following the plan. Stop rather than run out the clock. */
+                RoutePlanning_Cancel();
                 output.state = MISSION_STATE_FAILED;
             } else if (output.elapsed_ms >= MISSION_TIME_LIMIT_MS) {
                 RoutePlanning_Cancel();

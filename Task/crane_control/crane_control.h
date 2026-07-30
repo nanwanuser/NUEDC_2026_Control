@@ -108,6 +108,70 @@ void CraneControl_Update(void);
 void CraneControl_GetState(CraneControlState *state);
 
 /**
+ * @brief Copy the active configuration, so callers can place their targets in
+ *        this controller's coordinate frame instead of assuming one.
+ * @param config Destination configuration.
+ * @note Usable before CraneControl_Init(); it then reports the configuration
+ *       that startup will apply.
+ */
+void CraneControl_GetConfig(CraneControlConfig *config);
+
+/**
+ * @brief Report the last commanded pose in the planner's Cartesian frame.
+ * @param pose Destination pose.
+ * @note Usable before CraneControl_Init(); it then reports the park pose the
+ *       crane reaches at startup. Callers use this as the first waypoint of a
+ *       plan so the run does not begin with a jump.
+ */
+void CraneControl_GetCurrentPose(TrajectoryPose *pose);
+
+/**
+ * @brief Convert a boom/reach/lift posture into a planner Cartesian pose.
+ * @param boom_yaw_deg Boom angle relative to its own zero heading.
+ * @param radius_mm Reach measured from the column.
+ * @param z_mm Height in the planner frame.
+ * @param pose Receives the pose, with the yaw a centred wrist holds there.
+ * @note Lets callers name targets by reach and boom angle instead of hard-coding
+ *       this controller's frame. Usable before CraneControl_Init().
+ */
+void CraneControl_GetPoseAt(float boom_yaw_deg,
+                            float radius_mm,
+                            float z_mm,
+                            TrajectoryPose *pose);
+
+/**
+ * @brief Pick a yaw datum that keeps a whole waypoint set inside wrist travel.
+ *
+ * The wrist sits on the boom, so the world yaw it can hold is the boom heading
+ * plus at most half the servo travel. A plan that fixes the tool's world yaw in
+ * advance therefore leaves the wrist out of range for many pick/place pairs.
+ * Only the yaw *difference* between pick and place turns the piece, so adding
+ * one constant to every waypoint of a move places the piece just the same while
+ * re-centring the wrist. This returns that constant.
+ *
+ * @param poses Waypoints of one move, all of which get the same offset.
+ * @param count Number of waypoints, at least one.
+ * @param bias_deg Receives the offset to add to every waypoint's yaw_deg.
+ * @return CRANE_CONTROL_OK when the offset brings every waypoint inside wrist
+ *         travel, CRANE_CONTROL_OUT_OF_WORKSPACE when no offset can (the
+ *         best-effort offset is still written).
+ * @note Usable before CraneControl_Init().
+ */
+CraneControlStatus CraneControl_ChooseYawBias(const TrajectoryPose *poses,
+                                             uint8_t count,
+                                             float *bias_deg);
+
+/**
+ * @brief Check one planner pose against the workspace without moving anything.
+ * @param pose Cartesian pose in the planner frame.
+ * @return CRANE_CONTROL_OK when the pose maps inside boom, reach, and wrist
+ *         travel; CRANE_CONTROL_OUT_OF_WORKSPACE otherwise.
+ * @note The lift is driven by the sign of the z change rather than by z itself,
+ *       so z is not part of the check. Usable before CraneControl_Init().
+ */
+CraneControlStatus CraneControl_CheckPose(const TrajectoryPose *pose);
+
+/**
  * @brief Hardware hook for the planner's grip flag.
  * @note Override this weak function after assigning the electromagnet GPIO.
  */

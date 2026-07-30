@@ -27,6 +27,8 @@ static CraneMotorCommand s_reach_command;
 static CraneLiftTriggerState s_lift_trigger;
 static uint8_t s_lift_command_pending;
 static volatile uint8_t s_output_pending;
+static volatile TrajectoryPose s_last_pose;
+static uint8_t s_config_loaded;
 static float normalize_angle(float angle_deg)
 {
     float normalized = fmodf(angle_deg + 180.0f, 360.0f);
@@ -117,6 +119,43 @@ static uint8_t planner_output_is_valid(const RoutePlanningOutput *output)
                      pose_is_finite(&output->reference.pose));
 }
 
+/* The accessors at the end of this file are usable before startup, so callers
+   can lay out their targets in this controller's frame while the crane is still
+   parked. */
+static void ensure_config(void)
+{
+    if (s_config_loaded == 0U) {
+        CraneControl_LoadDefaultConfig(&s_config);
+        CraneControl_CustomizeConfig(&s_config);
+        s_config_loaded = 1U;
+    }
+}
+
+/* Cartesian pose of a boom/reach/wrist posture, i.e. the inverse of
+   transform_pose(), used to report where the crane currently is. */
+static void pose_from_axes(float boom_yaw_deg,
+                           float radius_mm,
+                           float z_mm,
+                           TrajectoryPose *pose)
+{
+    const float heading_deg = s_config.origin.yaw_deg + boom_yaw_deg;
+    const float heading_rad = heading_deg / CRANE_RAD_TO_DEG;
+
+    pose->x_mm = s_config.origin.x_mm + radius_mm * cosf(heading_rad);
+    pose->y_mm = s_config.origin.y_mm + radius_mm * sinf(heading_rad);
+    pose->z_mm = z_mm;
+    /* A centred wrist holds this world yaw. */
+    pose->yaw_deg = normalize_angle(heading_deg +
+                                    s_config.end_yaw_zero_offset_deg);
+}
+
+static void publish_pose(const TrajectoryPose *pose)
+{
+    taskENTER_CRITICAL();
+    s_last_pose = *pose;
+    taskEXIT_CRITICAL();
+}
+
 static void publish_state(CraneControlStatus status,
                           const RoutePlanningOutput *output,
                           const CraneActuatorTarget *target)
@@ -134,46 +173,61 @@ static void publish_state(CraneControlStatus status,
     taskEXIT_CRITICAL();
 }
 
-static void transform_reference(const TrajectoryReference *reference,
-                                CraneActuatorTarget *target)
+/* Maps one planner pose onto the boom, reach, and wrist axes. The lift is left
+   alone here because it is driven by the sign of the z change, not by z. */
+static void transform_pose(const TrajectoryPose *pose,
+                           float reference_boom_yaw_deg,
+                           CraneActuatorTarget *target)
 {
-    float dx = reference->pose.x_mm - s_config.origin.x_mm;
-    float dy = reference->pose.y_mm - s_config.origin.y_mm;
+    float dx = pose->x_mm - s_config.origin.x_mm;
+    float dy = pose->y_mm - s_config.origin.y_mm;
     float world_heading_deg;
     float relative_end_yaw_deg;
 
     target->radius_mm = sqrtf(dx * dx + dy * dy);
-    s_lift_command_pending = CraneLiftTrigger_Update(
-        &s_lift_trigger, reference->pose.z_mm, s_config.min_z_mm,
-        s_config.max_z_mm, &target->z_mm);
     world_heading_deg = target->radius_mm > CRANE_RADIUS_EPSILON_MM
                             ? atan2f(dy, dx) * CRANE_RAD_TO_DEG
-                            : s_config.origin.yaw_deg + s_state.target.boom_yaw_deg;
+                            : s_config.origin.yaw_deg + reference_boom_yaw_deg;
     target->boom_yaw_deg = unwrap_near(
         normalize_angle(world_heading_deg - s_config.origin.yaw_deg),
-        s_state.target.boom_yaw_deg);
-    target->lift_servo_angle_deg = s_config.lift_zero_angle_deg +
-        (float)s_config.lift_direction_sign * target->z_mm /
-        s_config.lift_mm_per_degree;
-    relative_end_yaw_deg = normalize_angle(reference->pose.yaw_deg -
+        reference_boom_yaw_deg);
+    relative_end_yaw_deg = normalize_angle(pose->yaw_deg -
         world_heading_deg - s_config.end_yaw_zero_offset_deg);
     target->end_yaw_servo_angle_deg = s_config.end_yaw_center_angle_deg +
         (float)s_config.end_yaw_direction_sign * relative_end_yaw_deg;
+}
+
+static void transform_reference(const TrajectoryReference *reference,
+                                CraneActuatorTarget *target)
+{
+    transform_pose(&reference->pose, s_state.target.boom_yaw_deg, target);
+    s_lift_command_pending = CraneLiftTrigger_Update(
+        &s_lift_trigger, reference->pose.z_mm, s_config.min_z_mm,
+        s_config.max_z_mm, &target->z_mm);
+    target->lift_servo_angle_deg = s_config.lift_zero_angle_deg +
+        (float)s_config.lift_direction_sign * target->z_mm /
+        s_config.lift_mm_per_degree;
     target->grip = reference->grip != 0U ? 1U : 0U;
 }
 
-static uint8_t target_is_in_workspace(const CraneActuatorTarget *target)
+/* Boom, reach, and wrist travel, which depend only on the planner pose. */
+static uint8_t pose_axes_are_in_workspace(const CraneActuatorTarget *target)
 {
     return (uint8_t)(target->boom_yaw_deg >= s_config.min_boom_yaw_deg &&
                      target->boom_yaw_deg <= s_config.max_boom_yaw_deg &&
                      target->radius_mm >= s_config.min_radius_mm &&
                      target->radius_mm <= s_config.max_radius_mm &&
+                     target->end_yaw_servo_angle_deg >= SERVO_MIN_ANGLE_DEG &&
+                     target->end_yaw_servo_angle_deg <= SERVO_MAX_ANGLE_DEG);
+}
+
+static uint8_t target_is_in_workspace(const CraneActuatorTarget *target)
+{
+    return (uint8_t)(pose_axes_are_in_workspace(target) &&
                      target->z_mm >= s_config.min_z_mm &&
                      target->z_mm <= s_config.max_z_mm &&
                      target->lift_servo_angle_deg >= SERVO_MIN_ANGLE_DEG &&
-                     target->lift_servo_angle_deg <= SERVO_MAX_ANGLE_DEG &&
-                     target->end_yaw_servo_angle_deg >= SERVO_MIN_ANGLE_DEG &&
-                     target->end_yaw_servo_angle_deg <= SERVO_MAX_ANGLE_DEG);
+                     target->lift_servo_angle_deg <= SERVO_MAX_ANGLE_DEG);
 }
 
 static uint8_t revolutions_to_command(float revolutions,
@@ -309,6 +363,7 @@ static CraneControlStatus apply_output(const RoutePlanningOutput *output)
     }
     if (status == CRANE_CONTROL_OK) {
         CraneControl_SetMagnet(target.grip);
+        publish_pose(&output->reference.pose);
     }
     publish_state(status, output, &target);
     return status;
@@ -330,6 +385,7 @@ CraneControlStatus CraneControl_Init(const CraneControlConfig *config)
 {
     CraneControlConfig default_config;
     CraneControlStatus status;
+    TrajectoryPose park_pose;
 
     if (config == NULL) {
         CraneControl_LoadDefaultConfig(&default_config);
@@ -339,6 +395,7 @@ CraneControlStatus CraneControl_Init(const CraneControlConfig *config)
         return CRANE_CONTROL_INVALID_CONFIG;
     }
     s_config = *config;
+    s_config_loaded = 1U;
     (void)memset(&s_state, 0, sizeof(s_state));
     (void)memset(&s_yaw_command, 0, sizeof(s_yaw_command));
     (void)memset(&s_reach_command, 0, sizeof(s_reach_command));
@@ -350,6 +407,17 @@ CraneControlStatus CraneControl_Init(const CraneControlConfig *config)
     s_state.target.lift_servo_angle_deg = s_config.lift_zero_angle_deg;
     s_state.target.end_yaw_servo_angle_deg =
         s_config.end_yaw_center_angle_deg;
+    /* Startup parks the boom at startup_boom_yaw_deg with the reach at its zero
+       radius, so that is the pose a first plan has to start from. */
+    s_state.target.radius_mm = s_config.reach_zero_radius_mm;
+    pose_from_axes(s_config.startup_boom_yaw_deg,
+                   s_config.reach_zero_radius_mm,
+                   s_state.target.z_mm,
+                   &park_pose);
+    publish_pose(&park_pose);
+    /* Release the magnet before anything moves, so a reset mid-carry does not
+       leave a piece stuck to the tool. */
+    CraneControl_SetMagnet(0U);
     pd42s1_init();
     if (Servo_Init() != HAL_OK) {
         s_state.status = CRANE_CONTROL_SERVO_ERROR;
@@ -398,6 +466,135 @@ void CraneControl_GetState(CraneControlState *state)
     taskENTER_CRITICAL();
     *state = s_state;
     taskEXIT_CRITICAL();
+}
+
+void CraneControl_GetConfig(CraneControlConfig *config)
+{
+    if (config == NULL) {
+        return;
+    }
+    taskENTER_CRITICAL();
+    ensure_config();
+    *config = s_config;
+    taskEXIT_CRITICAL();
+}
+
+void CraneControl_GetPoseAt(float boom_yaw_deg,
+                            float radius_mm,
+                            float z_mm,
+                            TrajectoryPose *pose)
+{
+    if (pose == NULL) {
+        return;
+    }
+    taskENTER_CRITICAL();
+    ensure_config();
+    pose_from_axes(boom_yaw_deg, radius_mm, z_mm, pose);
+    taskEXIT_CRITICAL();
+}
+
+void CraneControl_GetCurrentPose(TrajectoryPose *pose)
+{
+    if (pose == NULL) {
+        return;
+    }
+    taskENTER_CRITICAL();
+    if (s_state.initialized == 0U) {
+        /* Not started yet, so report the pose startup will park at. */
+        ensure_config();
+        pose_from_axes(s_config.startup_boom_yaw_deg,
+                       s_config.reach_zero_radius_mm, 0.0f, pose);
+    } else {
+        *pose = s_last_pose;
+    }
+    taskEXIT_CRITICAL();
+}
+
+/* World yaw the wrist has to hold at one waypoint, before any bias. */
+static float required_world_yaw(const TrajectoryPose *pose)
+{
+    const float dx = pose->x_mm - s_config.origin.x_mm;
+    const float dy = pose->y_mm - s_config.origin.y_mm;
+    const float radius_mm = sqrtf(dx * dx + dy * dy);
+    const float heading_deg = radius_mm > CRANE_RADIUS_EPSILON_MM
+                                  ? atan2f(dy, dx) * CRANE_RAD_TO_DEG
+                                  : s_config.origin.yaw_deg;
+
+    /* Wrist angle for zero bias, expressed as an offset from servo centre. */
+    return normalize_angle(pose->yaw_deg - heading_deg -
+                           s_config.end_yaw_zero_offset_deg);
+}
+
+CraneControlStatus CraneControl_ChooseYawBias(const TrajectoryPose *poses,
+                                             uint8_t count,
+                                             float *bias_deg)
+{
+    float lowest_deg = 0.0f;
+    float highest_deg = 0.0f;
+    float travel_deg;
+    float centre_deg;
+    uint8_t index;
+
+    if (poses == NULL || count == 0U || bias_deg == NULL) {
+        return CRANE_CONTROL_INVALID_ARGUMENT;
+    }
+    taskENTER_CRITICAL();
+    ensure_config();
+    for (index = 0U; index < count; ++index) {
+        float required_deg;
+
+        if (pose_is_finite(&poses[index]) == 0U) {
+            taskEXIT_CRITICAL();
+            return CRANE_CONTROL_INVALID_ARGUMENT;
+        }
+        required_deg = (float)s_config.end_yaw_direction_sign *
+                       required_world_yaw(&poses[index]);
+        /* Keep the run of angles contiguous: a set that straddles +-180 has to
+           be unwrapped or its span would look like a full turn. */
+        if (index == 0U) {
+            lowest_deg = required_deg;
+            highest_deg = required_deg;
+        } else {
+            const float unwrapped = unwrap_near(
+                required_deg, 0.5f * (lowest_deg + highest_deg));
+
+            if (unwrapped < lowest_deg) {
+                lowest_deg = unwrapped;
+            }
+            if (unwrapped > highest_deg) {
+                highest_deg = unwrapped;
+            }
+        }
+    }
+    /* Centre the required span on the servo's own centre. */
+    centre_deg = 0.5f * (lowest_deg + highest_deg);
+    *bias_deg = -(float)s_config.end_yaw_direction_sign * centre_deg;
+    travel_deg = highest_deg - lowest_deg;
+    taskEXIT_CRITICAL();
+
+    /* Even centred, a span wider than the servo travel cannot fit. */
+    return travel_deg <= (SERVO_MAX_ANGLE_DEG - SERVO_MIN_ANGLE_DEG)
+               ? CRANE_CONTROL_OK
+               : CRANE_CONTROL_OUT_OF_WORKSPACE;
+}
+
+CraneControlStatus CraneControl_CheckPose(const TrajectoryPose *pose)
+{
+    CraneActuatorTarget target = {0};
+    uint8_t in_workspace;
+
+    if (pose == NULL || pose_is_finite(pose) == 0U) {
+        return CRANE_CONTROL_INVALID_ARGUMENT;
+    }
+    taskENTER_CRITICAL();
+    ensure_config();
+    /* Check against the boom's own park angle so a pose right over the column,
+       where the heading is undefined, does not depend on the live state. */
+    transform_pose(pose, s_config.startup_boom_yaw_deg, &target);
+    in_workspace = pose_axes_are_in_workspace(&target);
+    taskEXIT_CRITICAL();
+    return in_workspace != 0U ? CRANE_CONTROL_OK
+                              : CRANE_CONTROL_OUT_OF_WORKSPACE;
 }
 
 __weak void CraneControl_SetMagnet(uint8_t enabled)

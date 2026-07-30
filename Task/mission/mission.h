@@ -7,6 +7,7 @@ extern "C" {
 
 #include <stdint.h>
 
+#include "crane_control.h"
 #include "decision.h"
 #include "decision_task.h"
 
@@ -43,6 +44,9 @@ typedef struct {
     uint8_t piece_count;
     DecisionResult decision_result;
     TrajectoryResult trajectory_result;
+    /* Why the crane stopped, which is the usual reason a run fails during
+       debugging: a target outside the boom or reach travel. */
+    CraneControlStatus crane_status;
 } MissionOutput;
 
 void Mission_Init(void);

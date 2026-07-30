@@ -1,6 +1,7 @@
 #include "crane_control.h"
 
 #include "Servo.h"
+#include "main.h"
 
 #include <stddef.h>
 #include <string.h>
@@ -29,6 +30,14 @@
 #define CRANE_REACH_SPEED_RPM             20U
 #define CRANE_YAW_ACCELERATION            10U
 #define CRANE_REACH_ACCELERATION          5U
+
+/* PE2 is wired to the third key, which no mission uses, so it drives the
+   electromagnet's switch here. Reassign both defines together if the magnet
+   moves to its own pin. */
+#define CRANE_MAGNET_GPIO_PORT            Key3_GPIO_Port
+#define CRANE_MAGNET_GPIO_PIN             Key3_Pin
+/* A high level energises the magnet through the switching transistor. */
+#define CRANE_MAGNET_ACTIVE_LEVEL         GPIO_PIN_SET
 
 void CraneControl_LoadDefaultConfig(CraneControlConfig *config)
 {
@@ -94,4 +103,39 @@ void CraneControl_CustomizeConfig(CraneControlConfig *config)
     config->yaw_acceleration = CRANE_YAW_ACCELERATION;
     config->reach_acceleration = CRANE_REACH_ACCELERATION;
     config->expect_stepper_response = 1U;
+}
+
+/**
+ * @brief Drive the electromagnet from the planner's grip flag.
+ * @param enabled Non-zero energises the magnet.
+ * @note MX_GPIO_Init() leaves this pin as an EXTI input, so the first call
+ *       reconfigures it as an output. Overrides the weak default.
+ */
+void CraneControl_SetMagnet(uint8_t enabled)
+{
+    static uint8_t configured;
+
+    if (configured == 0U) {
+        GPIO_InitTypeDef gpio_config;
+
+        (void)memset(&gpio_config, 0, sizeof(gpio_config));
+        gpio_config.Pin = CRANE_MAGNET_GPIO_PIN;
+        gpio_config.Mode = GPIO_MODE_OUTPUT_PP;
+        gpio_config.Pull = GPIO_NOPULL;
+        gpio_config.Speed = GPIO_SPEED_FREQ_LOW;
+        /* Release before switching the pin to an output, so enabling the driver
+           cannot briefly energise the magnet. */
+        HAL_GPIO_WritePin(CRANE_MAGNET_GPIO_PORT, CRANE_MAGNET_GPIO_PIN,
+                          CRANE_MAGNET_ACTIVE_LEVEL == GPIO_PIN_SET
+                              ? GPIO_PIN_RESET
+                              : GPIO_PIN_SET);
+        HAL_GPIO_Init(CRANE_MAGNET_GPIO_PORT, &gpio_config);
+        configured = 1U;
+    }
+    HAL_GPIO_WritePin(CRANE_MAGNET_GPIO_PORT, CRANE_MAGNET_GPIO_PIN,
+                      enabled != 0U
+                          ? CRANE_MAGNET_ACTIVE_LEVEL
+                          : (CRANE_MAGNET_ACTIVE_LEVEL == GPIO_PIN_SET
+                                 ? GPIO_PIN_RESET
+                                 : GPIO_PIN_SET));
 }
