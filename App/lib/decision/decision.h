@@ -25,7 +25,7 @@ typedef struct {
     DecisionPoint vertices[DECISION_MAX_VERTICES];
 } DecisionPiece;
 
-/* JSON is parsed into this fixed-size structure before entering DecisionTask. */
+/* The vision protocol is decoded into this structure before DecisionTask. */
 typedef struct {
     uint32_t seq;
     uint8_t piece_count;

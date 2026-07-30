@@ -54,7 +54,7 @@ void UsageFault_Handler(void);
 void DebugMon_Handler(void);
 void TIM6_DAC_IRQHandler(void);
 /* USER CODE BEGIN EFP */
-
+void USART1_IRQHandler(void);
 /* USER CODE END EFP */
 
 #ifdef __cplusplus

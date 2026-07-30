@@ -47,9 +47,10 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     App/drivers/servo/Servo.c
     App/lib/decision/decision.c
     App/lib/trajectory/trajectory.c
-    App/lib/vision_json/vision_json.c
+    App/lib/vision_protocol/vision_protocol.c
     Task/decision/decision_task.c
     Task/route_planning/route_planning.c
+    Task/vision_uart/vision_uart.c
 )
 
 
@@ -58,10 +59,10 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/App/drivers/servo
     ${CMAKE_CURRENT_SOURCE_DIR}/App/lib/decision
     ${CMAKE_CURRENT_SOURCE_DIR}/App/lib/trajectory
-    ${CMAKE_CURRENT_SOURCE_DIR}/App/lib/vision_json
-    ${CMAKE_CURRENT_SOURCE_DIR}/App/third_party/jsmn
+    ${CMAKE_CURRENT_SOURCE_DIR}/App/lib/vision_protocol
     ${CMAKE_CURRENT_SOURCE_DIR}/Task/decision
     ${CMAKE_CURRENT_SOURCE_DIR}/Task/route_planning
+    ${CMAKE_CURRENT_SOURCE_DIR}/Task/vision_uart
 )
 
 # Add project symbols (macros)

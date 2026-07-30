@@ -1,14 +1,15 @@
 # 拼图决策模块
 
-模块接收视觉 JSON 解析后的 `DecisionVisionFrame`，输出每片碎片的
-`pick -> transit -> place` 三个位姿。JSON 字段与结构体的对应关系为：
+模块接收视觉二进制协议解包后的 `DecisionVisionFrame`，输出每片碎片的
+`pick -> transit -> place` 三个位姿。协议字段与结构体的对应关系为：
 
 ```text
-seq                       -> DecisionVisionFrame.seq
-pieces[].id               -> DecisionPiece.id
-pieces[].cx_mm/cy_mm      -> DecisionPiece.center
-pieces[].vertex_count     -> DecisionPiece.vertex_count
-pieces[].vertices_mm      -> DecisionPiece.vertices
+seq                         -> DecisionVisionFrame.seq
+piece_count                 -> DecisionVisionFrame.piece_count
+piece[].id                  -> DecisionPiece.id
+piece[].cx/cy               -> DecisionPiece.center
+piece[].vertex_count        -> DecisionPiece.vertex_count
+piece[].vertices[].x/y      -> DecisionPiece.vertices
 ```
 
 视觉数据不需要提供 `yaw`。决策模块根据多边形顶点计算刚体旋转。
