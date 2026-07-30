@@ -26,6 +26,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "decision_task.h"
+#include "mission.h"
 #include "route_planning.h"
 #include "vision_uart.h"
 /* USER CODE END Includes */
@@ -51,6 +52,12 @@ const osThreadAttr_t Vision_uart_attributes = {
   .name = "Vision_uart",
   .stack_size = 768 * 4,
   .priority = (osPriority_t) osPriorityNormal,
+};
+osThreadId_t MissionHandle;
+const osThreadAttr_t Mission_attributes = {
+  .name = "Mission",
+  .stack_size = 512 * 4,
+  .priority = (osPriority_t) osPriorityAboveNormal,
 };
 /* USER CODE END Variables */
 /* Definitions for defaultTask */
@@ -85,6 +92,7 @@ const osThreadAttr_t Route_planning_attributes = {
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
 void VisionUart_App(void *argument);
+void Mission_App(void *argument);
 /* USER CODE END FunctionPrototypes */
 
 void StartDefaultTask(void *argument);
@@ -104,6 +112,7 @@ void MX_FREERTOS_Init(void) {
   DecisionTask_Init();
   RoutePlanning_Init();
   VisionUart_Init();
+  Mission_Init();
   /* USER CODE END Init */
 
   /* USER CODE BEGIN RTOS_MUTEX */
@@ -137,6 +146,7 @@ void MX_FREERTOS_Init(void) {
 
   /* USER CODE BEGIN RTOS_THREADS */
   Vision_uartHandle = osThreadNew(VisionUart_App, NULL, &Vision_uart_attributes);
+  MissionHandle = osThreadNew(Mission_App, NULL, &Mission_attributes);
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */

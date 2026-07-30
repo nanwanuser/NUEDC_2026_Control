@@ -8,6 +8,7 @@ extern "C" {
 #include <stdint.h>
 
 #include "decision.h"
+#include "decision_task.h"
 
 typedef enum {
     VISION_UART_STATE_IDLE = 0,
@@ -24,10 +25,20 @@ typedef struct {
     uint32_t valid_frame_count;
     uint32_t invalid_frame_count;
     uint32_t dropped_byte_count;
+    /* Mirrors the armed request so the caller can tell which run this is. */
+    uint32_t arm_id;
 } VisionUartOutput;
 
 void VisionUart_Init(void);
 uint8_t VisionUart_SetFixedLayout(const DecisionFixedLayout *layout);
+
+/* Arms one acquisition. The task stays idle with the receiver off until this
+   is called, so a key press is what starts the contest run. The submitted
+   DecisionTaskRequest is base_request with mode, vision and fixed_layout
+   replaced by what the camera actually sent. */
+uint8_t VisionUart_Arm(const DecisionTaskRequest *base_request, uint32_t arm_id);
+void VisionUart_Abort(void);
+
 void VisionUart_GetOutput(VisionUartOutput *output);
 void VisionUart_App(void *argument);
 
