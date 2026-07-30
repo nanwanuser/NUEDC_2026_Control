@@ -162,6 +162,34 @@ CraneControlStatus CraneControl_ChooseYawBias(const TrajectoryPose *poses,
                                              float *bias_deg);
 
 /**
+ * @brief Bridge two poses whose straight path would leave the reach band.
+ *
+ * The planner interpolates in Cartesian space, so a straight leg between two
+ * reachable points can still cut inside the minimum reach: the chord of a wide
+ * boom sweep passes nearer the column than either end. The crane then refuses a
+ * reference part-way through a move that passed every waypoint check.
+ *
+ * This returns intermediate poses that bulge the leg outwards, holding a radius
+ * just outside the wider end, so the whole path stays in the band.
+ *
+ * @param from Start pose of the leg.
+ * @param to End pose of the leg.
+ * @param poses Receives the intermediate poses, in order.
+ * @param capacity Number of poses that fit; zero is allowed.
+ * @param count Receives how many were written, zero when the straight leg is
+ *              already safe or capacity ran out.
+ * @return CRANE_CONTROL_OK when the resulting path is inside the workspace,
+ *         CRANE_CONTROL_OUT_OF_WORKSPACE when it is not even with the poses
+ *         added, which includes the case of too little capacity.
+ * @note Usable before CraneControl_Init().
+ */
+CraneControlStatus CraneControl_PlanTransitPoses(const TrajectoryPose *from,
+                                                const TrajectoryPose *to,
+                                                TrajectoryPose *poses,
+                                                uint8_t capacity,
+                                                uint8_t *count);
+
+/**
  * @brief Check one planner pose against the workspace without moving anything.
  * @param pose Cartesian pose in the planner frame.
  * @return CRANE_CONTROL_OK when the pose maps inside boom, reach, and wrist

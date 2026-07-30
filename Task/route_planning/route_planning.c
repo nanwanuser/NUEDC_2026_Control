@@ -91,26 +91,65 @@ static void apply_yaw_bias(TrajectoryRequest *trajectory)
     }
 }
 
-/* The crane refuses out-of-reach references one sample at a time, which during a
-   run looks like the arm stopping for no stated reason. Checking the waypoints up
-   front turns that into an immediate planning failure naming the bad plan. */
-static uint8_t waypoints_are_reachable(const TrajectoryRequest *trajectory)
+/* The decision layer names only the points it cares about, and the trajectory
+   interpolates straight between them. A straight leg between two reachable
+   points can still cut inside the crane's minimum reach, because the chord of a
+   wide boom sweep passes nearer the column than either end. Bridging poses that
+   bulge the leg outwards are inserted here, before generation, so the plan the
+   crane executes is one it can follow all the way through.
+
+   Legs are widened in place, which is why the path is rebuilt rather than
+   patched: an insertion shifts every later point. */
+static uint8_t widen_path(TrajectoryPath *path)
 {
+    TrajectoryPath widened;
     uint8_t index;
 
-    for (index = 0U; index < trajectory->approach.point_count; ++index) {
-        if (CraneControl_CheckPose(&trajectory->approach.points[index]) !=
-            CRANE_CONTROL_OK) {
+    if (path->point_count == 0U) {
+        return 1U;
+    }
+    if (CraneControl_CheckPose(&path->points[0]) != CRANE_CONTROL_OK) {
+        return 0U;
+    }
+    widened.points[0] = path->points[0];
+    widened.point_count = 1U;
+
+    for (index = 1U; index < path->point_count; ++index) {
+        const TrajectoryPose *next = &path->points[index];
+        /* Room for the bridge, less this point and the ones still to be copied
+           after it. Earlier insertions can use the budget up entirely, so the
+           subtraction is done signed. */
+        const int16_t remaining = (int16_t)(path->point_count - index - 1U);
+        const int16_t free_slots = (int16_t)((int16_t)TRAJECTORY_MAX_WAYPOINTS -
+                                             (int16_t)widened.point_count -
+                                             remaining - 1);
+        const uint8_t capacity = free_slots > 0 ? (uint8_t)free_slots : 0U;
+        uint8_t inserted = 0U;
+
+        if (CraneControl_CheckPose(next) != CRANE_CONTROL_OK) {
             return 0U;
         }
-    }
-    for (index = 0U; index < trajectory->transfer.point_count; ++index) {
-        if (CraneControl_CheckPose(&trajectory->transfer.points[index]) !=
-            CRANE_CONTROL_OK) {
+        if (CraneControl_PlanTransitPoses(
+                &widened.points[widened.point_count - 1U], next,
+                &widened.points[widened.point_count], capacity,
+                &inserted) != CRANE_CONTROL_OK) {
             return 0U;
         }
+        widened.point_count = (uint8_t)(widened.point_count + inserted + 1U);
+        widened.points[widened.point_count - 1U] = *next;
     }
+
+    *path = widened;
     return 1U;
+}
+
+/* The crane refuses out-of-reach references one sample at a time, which during a
+   run looks like the arm stopping for no stated reason. Preparing the path up
+   front turns that into an immediate planning failure naming the bad plan. */
+static uint8_t prepare_path(TrajectoryRequest *trajectory)
+{
+    return (uint8_t)(widen_path(&trajectory->approach) != 0U &&
+                     widen_path(&trajectory->transfer) != 0U);
 }
 
 static float ticks_to_seconds(uint32_t ticks)
@@ -205,7 +244,7 @@ void Route_planning_App(void *argument)
         if (RoutePlanning_RequestPending != 0U) {
             copy_input(&request);
             apply_yaw_bias(&request.trajectory);
-            result = waypoints_are_reachable(&request.trajectory) != 0U
+            result = prepare_path(&request.trajectory) != 0U
                          ? Trajectory_Generate(&request.trajectory, &plan)
                          : TRAJECTORY_RESULT_INVALID_ARGUMENT;
             active_plan_id = request.plan_id;

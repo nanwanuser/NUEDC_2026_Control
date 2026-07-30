@@ -13,6 +13,18 @@
 #define CRANE_PI_F                         3.141592654f
 #define CRANE_RAD_TO_DEG                  (180.0f / CRANE_PI_F)
 #define CRANE_RADIUS_EPSILON_MM           0.001f
+/* How far outside the minimum reach the innermost candidate arc rides, so the
+   sub-chords either side of it still clear that bound. */
+#define CRANE_TRANSIT_CLEARANCE_MM        6.0f
+/* Candidate arc radii tried per leg, from the innermost outwards. */
+#define CRANE_TRANSIT_RADIUS_STEPS        16U
+/* Past two points the arc gains almost nothing, and the waypoint budget of a
+   phase cannot spare more anyway. */
+#define CRANE_MAX_TRANSIT_POSES           2U
+/* Slack at the travel ends, absorbing float rounding without letting a target
+   past anything the mechanism would notice. */
+#define CRANE_LIMIT_TOLERANCE_MM          0.05f
+#define CRANE_LIMIT_TOLERANCE_DEG         0.05f
 
 typedef struct {
     pd42s1_direction_t direction;
@@ -210,13 +222,21 @@ static void transform_reference(const TrajectoryReference *reference,
     target->grip = reference->grip != 0U ? 1U : 0U;
 }
 
-/* Boom, reach, and wrist travel, which depend only on the planner pose. */
+/* Boom, reach, and wrist travel, which depend only on the planner pose. The
+   travel ends are held to CRANE_LIMIT_TOLERANCE_MM rather than exactly, because
+   the park pose sits on the minimum reach: a reference meant to reach it lands a
+   float rounding either side, and the strict comparison would reject half of
+   them. The tolerance is well under one step of either drive. */
 static uint8_t pose_axes_are_in_workspace(const CraneActuatorTarget *target)
 {
-    return (uint8_t)(target->boom_yaw_deg >= s_config.min_boom_yaw_deg &&
-                     target->boom_yaw_deg <= s_config.max_boom_yaw_deg &&
-                     target->radius_mm >= s_config.min_radius_mm &&
-                     target->radius_mm <= s_config.max_radius_mm &&
+    return (uint8_t)(target->boom_yaw_deg >=
+                         s_config.min_boom_yaw_deg - CRANE_LIMIT_TOLERANCE_DEG &&
+                     target->boom_yaw_deg <=
+                         s_config.max_boom_yaw_deg + CRANE_LIMIT_TOLERANCE_DEG &&
+                     target->radius_mm >=
+                         s_config.min_radius_mm - CRANE_LIMIT_TOLERANCE_MM &&
+                     target->radius_mm <=
+                         s_config.max_radius_mm + CRANE_LIMIT_TOLERANCE_MM &&
                      target->end_yaw_servo_angle_deg >= SERVO_MIN_ANGLE_DEG &&
                      target->end_yaw_servo_angle_deg <= SERVO_MAX_ANGLE_DEG);
 }
@@ -576,6 +596,155 @@ CraneControlStatus CraneControl_ChooseYawBias(const TrajectoryPose *poses,
     return travel_deg <= (SERVO_MAX_ANGLE_DEG - SERVO_MIN_ANGLE_DEG)
                ? CRANE_CONTROL_OK
                : CRANE_CONTROL_OUT_OF_WORKSPACE;
+}
+
+/* Smallest and largest radius a straight Cartesian leg passes through. Both are
+   exact: along a line the radius falls to a single minimum at the foot of the
+   perpendicular from the column and rises towards both ends. */
+static void leg_radius_bounds(const TrajectoryPose *from,
+                              const TrajectoryPose *to,
+                              float *min_mm,
+                              float *max_mm)
+{
+    const float ax = from->x_mm - s_config.origin.x_mm;
+    const float ay = from->y_mm - s_config.origin.y_mm;
+    const float dx = (to->x_mm - s_config.origin.x_mm) - ax;
+    const float dy = (to->y_mm - s_config.origin.y_mm) - ay;
+    const float length_squared = dx * dx + dy * dy;
+    const float radius_a = sqrtf(ax * ax + ay * ay);
+    const float radius_b = sqrtf((ax + dx) * (ax + dx) + (ay + dy) * (ay + dy));
+
+    *max_mm = radius_a > radius_b ? radius_a : radius_b;
+    *min_mm = radius_a < radius_b ? radius_a : radius_b;
+    if (length_squared > CRANE_RADIUS_EPSILON_MM) {
+        const float fraction = -(ax * dx + ay * dy) / length_squared;
+
+        if (fraction > 0.0f && fraction < 1.0f) {
+            const float fx = ax + fraction * dx;
+            const float fy = ay + fraction * dy;
+
+            *min_mm = sqrtf(fx * fx + fy * fy);
+        }
+    }
+}
+
+static uint8_t leg_is_in_reach(const TrajectoryPose *from,
+                               const TrajectoryPose *to)
+{
+    float min_mm;
+    float max_mm;
+
+    leg_radius_bounds(from, to, &min_mm, &max_mm);
+    return (uint8_t)(min_mm >= s_config.min_radius_mm - CRANE_LIMIT_TOLERANCE_MM &&
+                     max_mm <= s_config.max_radius_mm + CRANE_LIMIT_TOLERANCE_MM);
+}
+
+/* Lays `wanted` poses along an arc of the given radius, and reports whether
+   every resulting sub-leg stays inside the reach band. */
+static uint8_t fill_transit_poses(const TrajectoryPose *from,
+                                  const TrajectoryPose *to,
+                                  uint8_t wanted,
+                                  float radius_mm,
+                                  TrajectoryPose *poses)
+{
+    const float ax = from->x_mm - s_config.origin.x_mm;
+    const float ay = from->y_mm - s_config.origin.y_mm;
+    const float bx = to->x_mm - s_config.origin.x_mm;
+    const float by = to->y_mm - s_config.origin.y_mm;
+    const float radius_a = sqrtf(ax * ax + ay * ay);
+    const float radius_b = sqrtf(bx * bx + by * by);
+    const TrajectoryPose *previous = from;
+    float heading_a;
+    float heading_b;
+    float yaw_b;
+    uint8_t index;
+
+    if (radius_a <= CRANE_RADIUS_EPSILON_MM ||
+        radius_b <= CRANE_RADIUS_EPSILON_MM) {
+        /* A leg ending over the column has no heading to interpolate, and the
+           end itself is already outside the reach band. */
+        return 0U;
+    }
+    heading_a = atan2f(ay, ax) * CRANE_RAD_TO_DEG;
+    heading_b = unwrap_near(atan2f(by, bx) * CRANE_RAD_TO_DEG, heading_a);
+    yaw_b = unwrap_near(to->yaw_deg, from->yaw_deg);
+
+    for (index = 0U; index < wanted; ++index) {
+        const float fraction = (float)(index + 1U) / (float)(wanted + 1U);
+        const float heading_deg = heading_a + fraction * (heading_b - heading_a);
+        const float heading_rad = heading_deg / CRANE_RAD_TO_DEG;
+        CraneActuatorTarget target = {0};
+        TrajectoryPose *pose = &poses[index];
+
+        pose->x_mm = s_config.origin.x_mm + radius_mm * cosf(heading_rad);
+        pose->y_mm = s_config.origin.y_mm + radius_mm * sinf(heading_rad);
+        /* Hold the height the leg starts at: the lift is triggered by the sign
+           of a z change, so a bump here would cost two extra strokes. */
+        pose->z_mm = from->z_mm;
+        pose->yaw_deg = normalize_angle(from->yaw_deg +
+                                        fraction * (yaw_b - from->yaw_deg));
+        transform_pose(pose, s_config.startup_boom_yaw_deg, &target);
+        if (pose_axes_are_in_workspace(&target) == 0U ||
+            leg_is_in_reach(previous, pose) == 0U) {
+            return 0U;
+        }
+        previous = pose;
+    }
+    return leg_is_in_reach(previous, to);
+}
+
+CraneControlStatus CraneControl_PlanTransitPoses(const TrajectoryPose *from,
+                                                const TrajectoryPose *to,
+                                                TrajectoryPose *poses,
+                                                uint8_t capacity,
+                                                uint8_t *count)
+{
+    CraneControlStatus status = CRANE_CONTROL_OUT_OF_WORKSPACE;
+
+    if (from == NULL || to == NULL || count == NULL ||
+        (poses == NULL && capacity > 0U) ||
+        pose_is_finite(from) == 0U || pose_is_finite(to) == 0U) {
+        return CRANE_CONTROL_INVALID_ARGUMENT;
+    }
+    *count = 0U;
+
+    taskENTER_CRITICAL();
+    ensure_config();
+    if (leg_is_in_reach(from, to) != 0U) {
+        status = CRANE_CONTROL_OK;
+    } else {
+        uint8_t wanted;
+        const uint8_t limit = capacity < CRANE_MAX_TRANSIT_POSES
+                                  ? capacity
+                                  : CRANE_MAX_TRANSIT_POSES;
+        const float inner_mm = s_config.min_radius_mm +
+                               CRANE_TRANSIT_CLEARANCE_MM;
+
+        /* Fewest poses first, so a leg that only needs one does not spend a
+           waypoint the rest of the phase may want. */
+        for (wanted = 1U; wanted <= limit && status != CRANE_CONTROL_OK;
+             ++wanted) {
+            uint8_t step;
+
+            /* Nearest arc first. The spline overshoots the radius of the poses
+               it passes through, so an arc further out than the leg needs
+               trades a minimum-reach violation for a maximum-reach one. */
+            for (step = 0U; step < CRANE_TRANSIT_RADIUS_STEPS; ++step) {
+                const float radius_mm = inner_mm +
+                    (s_config.max_radius_mm - inner_mm) * (float)step /
+                    (float)(CRANE_TRANSIT_RADIUS_STEPS - 1U);
+
+                if (fill_transit_poses(from, to, wanted, radius_mm, poses) !=
+                    0U) {
+                    *count = wanted;
+                    status = CRANE_CONTROL_OK;
+                    break;
+                }
+            }
+        }
+    }
+    taskEXIT_CRITICAL();
+    return status;
 }
 
 CraneControlStatus CraneControl_CheckPose(const TrajectoryPose *pose)
