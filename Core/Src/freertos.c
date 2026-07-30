@@ -64,7 +64,7 @@ const osThreadAttr_t Mission_attributes = {
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
-  .stack_size = 1024 * 4,
+  .stack_size = 128 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
 /* Definitions for Robot_arm_ctrl */
@@ -147,6 +147,15 @@ void MX_FREERTOS_Init(void) {
   /* USER CODE BEGIN RTOS_THREADS */
   Vision_uartHandle = osThreadNew(VisionUart_App, NULL, &Vision_uart_attributes);
   MissionHandle = osThreadNew(Mission_App, NULL, &Mission_attributes);
+
+  /* Creation failures are otherwise silent: the board boots, the axes home and
+     the keys do nothing because Mission_App was never scheduled. */
+  configASSERT(defaultTaskHandle != NULL);
+  configASSERT(Robot_arm_ctrlHandle != NULL);
+  configASSERT(DecisionHandle != NULL);
+  configASSERT(Route_planningHandle != NULL);
+  configASSERT(Vision_uartHandle != NULL);
+  configASSERT(MissionHandle != NULL);
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
@@ -233,6 +242,29 @@ __weak void Route_planning_App(void *argument)
 
 /* Private application code --------------------------------------------------*/
 /* USER CODE BEGIN Application */
+
+/**
+  * @brief  Called by the kernel when pvPortMalloc() fails.
+  * @note   Without this hook an undersized configTOTAL_HEAP_SIZE makes
+  *         osThreadNew() return NULL silently, so the threads created last
+  *         (Vision_uart, Mission) never run and the device looks dead.
+  */
+void vApplicationMallocFailedHook(void)
+{
+  Error_Handler();
+}
+
+/**
+  * @brief  Called by the kernel when a task overflows its stack.
+  * @param  xTask Handle of the offending task.
+  * @param  pcTaskName Name of the offending task.
+  */
+void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
+{
+  (void)xTask;
+  (void)pcTaskName;
+  Error_Handler();
+}
 
 /* USER CODE END Application */
 
