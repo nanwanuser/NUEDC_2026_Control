@@ -22,6 +22,7 @@ typedef enum {
 
 typedef struct {
     TrajectoryPose origin;
+    float startup_boom_yaw_deg;
     float yaw_motor_revolutions_per_crane_revolution;
     float reach_zero_radius_mm;
     float reach_mm_per_motor_revolution;
@@ -42,7 +43,8 @@ typedef struct {
     uint16_t yaw_speed_rpm;
     uint16_t reach_speed_rpm;
     uint32_t min_stepper_change_units;
-    uint8_t stepper_acceleration;
+    uint8_t yaw_acceleration;
+    uint8_t reach_acceleration;
     uint8_t expect_stepper_response;
 } CraneControlConfig;
 

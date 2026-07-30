@@ -52,6 +52,8 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     App/lib/trajectory/trajectory.c
     App/lib/vision_json/vision_json.c
     Task/crane_control/crane_control.c
+    Task/crane_control/crane_control_config.c
+    Task/crane_control/crane_lift_trigger.c
     Task/crane_control/crane_control_task.c
     Task/decision/decision_task.c
     Task/route_planning/route_planning.c

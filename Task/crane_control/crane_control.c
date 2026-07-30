@@ -1,4 +1,5 @@
 #include "crane_control.h"
+#include "crane_lift_trigger.h"
 
 #include "Servo.h"
 #include "pd42s1.h"
@@ -11,12 +12,6 @@
 #include <string.h>
 #define CRANE_PI_F                         3.141592654f
 #define CRANE_RAD_TO_DEG                  (180.0f / CRANE_PI_F)
-#define CRANE_GEAR_TRAVEL_MM_PER_REV      94.2477796f
-#define CRANE_LIFT_TRAVEL_MM_PER_DEG      (CRANE_GEAR_TRAVEL_MM_PER_REV / 360.0f)
-#define CRANE_DEFAULT_Z_LIMIT_MM          (CRANE_GEAR_TRAVEL_MM_PER_REV / 4.0f)
-#define CRANE_DEFAULT_STEPPER_SPEED_RPM   60U
-#define CRANE_DEFAULT_ACCELERATION        50U
-#define CRANE_DEFAULT_MIN_CHANGE_UNITS    16U
 #define CRANE_RADIUS_EPSILON_MM           0.001f
 
 typedef struct {
@@ -29,6 +24,8 @@ static CraneControlState s_state;
 static RoutePlanningOutput s_pending_output;
 static CraneMotorCommand s_yaw_command;
 static CraneMotorCommand s_reach_command;
+static CraneLiftTriggerState s_lift_trigger;
+static uint8_t s_lift_command_pending;
 static volatile uint8_t s_output_pending;
 static float normalize_angle(float angle_deg)
 {
@@ -54,6 +51,7 @@ static uint8_t config_values_are_finite(const CraneControlConfig *config)
                      isfinite(config->origin.y_mm) &&
                      isfinite(config->origin.z_mm) &&
                      isfinite(config->origin.yaw_deg) &&
+                     isfinite(config->startup_boom_yaw_deg) &&
                      isfinite(config->yaw_motor_revolutions_per_crane_revolution) &&
                      isfinite(config->reach_zero_radius_mm) &&
                      isfinite(config->reach_mm_per_motor_revolution) &&
@@ -71,6 +69,10 @@ static uint8_t config_values_are_finite(const CraneControlConfig *config)
 static uint8_t config_ranges_are_valid(const CraneControlConfig *config)
 {
     return (uint8_t)(config->min_boom_yaw_deg <= config->max_boom_yaw_deg &&
+                     config->startup_boom_yaw_deg >=
+                         config->min_boom_yaw_deg &&
+                     config->startup_boom_yaw_deg <=
+                         config->max_boom_yaw_deg &&
                      config->min_radius_mm <= config->max_radius_mm &&
                      config->min_z_mm <= config->max_z_mm &&
                      config->yaw_motor_revolutions_per_crane_revolution > 0.0f &&
@@ -86,7 +88,8 @@ static uint8_t config_ranges_are_valid(const CraneControlConfig *config)
                      config->yaw_speed_rpm <= PD42S1_MAX_SPEED_RPM &&
                      config->reach_speed_rpm > 0U &&
                      config->reach_speed_rpm <= PD42S1_MAX_SPEED_RPM &&
-                     config->stepper_acceleration <= PD42S1_MAX_ACCELERATION &&
+                     config->yaw_acceleration <= PD42S1_MAX_ACCELERATION &&
+                     config->reach_acceleration <= PD42S1_MAX_ACCELERATION &&
                      config->expect_stepper_response <= 1U);
 }
 static uint8_t config_is_valid(const CraneControlConfig *config)
@@ -140,7 +143,9 @@ static void transform_reference(const TrajectoryReference *reference,
     float relative_end_yaw_deg;
 
     target->radius_mm = sqrtf(dx * dx + dy * dy);
-    target->z_mm = reference->pose.z_mm - s_config.origin.z_mm;
+    s_lift_command_pending = CraneLiftTrigger_Update(
+        &s_lift_trigger, reference->pose.z_mm, s_config.min_z_mm,
+        s_config.max_z_mm, &target->z_mm);
     world_heading_deg = target->radius_mm > CRANE_RADIUS_EPSILON_MM
                             ? atan2f(dy, dx) * CRANE_RAD_TO_DEG
                             : s_config.origin.yaw_deg + s_state.target.boom_yaw_deg;
@@ -202,15 +207,15 @@ static uint8_t command_has_changed(const CraneMotorCommand *next,
                      : previous->position_units - next->position_units;
     return (uint8_t)(difference >= s_config.min_stepper_change_units);
 }
-
 static CraneControlStatus send_motor_command(uint8_t motor_id,
                                              uint16_t speed_rpm,
+                                             uint8_t acceleration,
                                              const CraneMotorCommand *command)
 {
     pd42s1_result_t result;
     max485_status_t status = pd42s1_move_absolute(
-        motor_id, command->direction, s_config.stepper_acceleration,
-        speed_rpm, command->position_units);
+        motor_id, command->direction, acceleration, speed_rpm,
+        command->position_units);
 
     if (status != MAX485_STATUS_OK) {
         return CRANE_CONTROL_TRANSPORT_ERROR;
@@ -227,9 +232,9 @@ static CraneControlStatus send_motor_command(uint8_t motor_id,
     return result == PD42S1_RESULT_SUCCESS ? CRANE_CONTROL_OK
                                            : CRANE_CONTROL_DRIVE_REJECTED;
 }
-
 static CraneControlStatus command_axis(uint8_t motor_id,
                                        uint16_t speed_rpm,
+                                       uint8_t acceleration,
                                        float revolutions,
                                        uint8_t force,
                                        CraneMotorCommand *previous)
@@ -243,11 +248,22 @@ static CraneControlStatus command_axis(uint8_t motor_id,
     if (command_has_changed(&next, previous, force) == 0U) {
         return CRANE_CONTROL_OK;
     }
-    status = send_motor_command(motor_id, speed_rpm, &next);
+    status = send_motor_command(motor_id, speed_rpm, acceleration, &next);
     if (status == CRANE_CONTROL_OK) {
         *previous = next;
     }
     return status;
+}
+
+static CraneControlStatus initialize_yaw_axis(void)
+{
+    float revolutions = (float)s_config.yaw_direction_sign *
+        s_config.startup_boom_yaw_deg *
+        s_config.yaw_motor_revolutions_per_crane_revolution / 360.0f;
+
+    return command_axis(PD42S1_MOTOR_1_ID, s_config.yaw_speed_rpm,
+                        s_config.yaw_acceleration, revolutions, 1U,
+                        &s_yaw_command);
 }
 
 static CraneControlStatus apply_output(const RoutePlanningOutput *output)
@@ -270,14 +286,25 @@ static CraneControlStatus apply_output(const RoutePlanningOutput *output)
         (target.radius_mm - s_config.reach_zero_radius_mm) /
         s_config.reach_mm_per_motor_revolution;
     status = command_axis(PD42S1_MOTOR_1_ID, s_config.yaw_speed_rpm,
-                          yaw_revolutions, force, &s_yaw_command);
+                          s_config.yaw_acceleration, yaw_revolutions,
+                          force, &s_yaw_command);
     if (status == CRANE_CONTROL_OK) {
         status = command_axis(PD42S1_MOTOR_2_ID, s_config.reach_speed_rpm,
-                              reach_revolutions, force, &s_reach_command);
+                              s_config.reach_acceleration, reach_revolutions,
+                              force, &s_reach_command);
+    }
+    if (status == CRANE_CONTROL_OK && s_lift_command_pending != 0U) {
+        if (Servo_SetAngle(SERVO_LIFT,
+                           target.lift_servo_angle_deg) != HAL_OK) {
+            status = CRANE_CONTROL_SERVO_ERROR;
+        } else {
+            CraneLiftTrigger_Acknowledge(&s_lift_trigger);
+            s_lift_command_pending = 0U;
+        }
     }
     if (status == CRANE_CONTROL_OK &&
-        Servo_SetAngles(target.lift_servo_angle_deg,
-                        target.end_yaw_servo_angle_deg) != HAL_OK) {
+        Servo_SetAngle(SERVO_END_YAW,
+                       target.end_yaw_servo_angle_deg) != HAL_OK) {
         status = CRANE_CONTROL_SERVO_ERROR;
     }
     if (status == CRANE_CONTROL_OK) {
@@ -286,7 +313,6 @@ static CraneControlStatus apply_output(const RoutePlanningOutput *output)
     publish_state(status, output, &target);
     return status;
 }
-
 static uint8_t take_pending_output(RoutePlanningOutput *output)
 {
     uint8_t pending;
@@ -300,37 +326,10 @@ static uint8_t take_pending_output(RoutePlanningOutput *output)
     taskEXIT_CRITICAL();
     return pending;
 }
-
-void CraneControl_LoadDefaultConfig(CraneControlConfig *config)
-{
-    if (config == NULL) {
-        return;
-    }
-    (void)memset(config, 0, sizeof(*config));
-    config->yaw_motor_revolutions_per_crane_revolution = 1.0f;
-    config->reach_mm_per_motor_revolution = CRANE_GEAR_TRAVEL_MM_PER_REV;
-    config->lift_zero_angle_deg = SERVO_CENTER_ANGLE_DEG;
-    config->lift_mm_per_degree = CRANE_LIFT_TRAVEL_MM_PER_DEG;
-    config->end_yaw_center_angle_deg = SERVO_CENTER_ANGLE_DEG;
-    config->min_boom_yaw_deg = -180.0f;
-    config->max_boom_yaw_deg = 180.0f;
-    config->max_radius_mm = 250.0f;
-    config->min_z_mm = -CRANE_DEFAULT_Z_LIMIT_MM;
-    config->max_z_mm = CRANE_DEFAULT_Z_LIMIT_MM;
-    config->yaw_direction_sign = 1;
-    config->reach_direction_sign = 1;
-    config->lift_direction_sign = 1;
-    config->end_yaw_direction_sign = 1;
-    config->yaw_speed_rpm = CRANE_DEFAULT_STEPPER_SPEED_RPM;
-    config->reach_speed_rpm = CRANE_DEFAULT_STEPPER_SPEED_RPM;
-    config->min_stepper_change_units = CRANE_DEFAULT_MIN_CHANGE_UNITS;
-    config->stepper_acceleration = CRANE_DEFAULT_ACCELERATION;
-    config->expect_stepper_response = 1U;
-}
-
 CraneControlStatus CraneControl_Init(const CraneControlConfig *config)
 {
     CraneControlConfig default_config;
+    CraneControlStatus status;
 
     if (config == NULL) {
         CraneControl_LoadDefaultConfig(&default_config);
@@ -343,8 +342,11 @@ CraneControlStatus CraneControl_Init(const CraneControlConfig *config)
     (void)memset(&s_state, 0, sizeof(s_state));
     (void)memset(&s_yaw_command, 0, sizeof(s_yaw_command));
     (void)memset(&s_reach_command, 0, sizeof(s_reach_command));
+    CraneLiftTrigger_Init(&s_lift_trigger, 0.0f);
+    s_lift_command_pending = 0U;
     s_output_pending = 0U;
     s_state.status = CRANE_CONTROL_OK;
+    s_state.target.boom_yaw_deg = s_config.startup_boom_yaw_deg;
     s_state.target.lift_servo_angle_deg = s_config.lift_zero_angle_deg;
     s_state.target.end_yaw_servo_angle_deg =
         s_config.end_yaw_center_angle_deg;
@@ -352,6 +354,11 @@ CraneControlStatus CraneControl_Init(const CraneControlConfig *config)
     if (Servo_Init() != HAL_OK) {
         s_state.status = CRANE_CONTROL_SERVO_ERROR;
         return s_state.status;
+    }
+    status = initialize_yaw_axis();
+    if (status != CRANE_CONTROL_OK) {
+        s_state.status = status;
+        return status;
     }
     s_state.initialized = 1U;
     return CRANE_CONTROL_OK;
