@@ -26,7 +26,9 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "decision_task.h"
+#include "mission.h"
 #include "route_planning.h"
+#include "vision_uart.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -45,13 +47,24 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
-
+osThreadId_t Vision_uartHandle;
+const osThreadAttr_t Vision_uart_attributes = {
+  .name = "Vision_uart",
+  .stack_size = 768 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
+osThreadId_t MissionHandle;
+const osThreadAttr_t Mission_attributes = {
+  .name = "Mission",
+  .stack_size = 512 * 4,
+  .priority = (osPriority_t) osPriorityAboveNormal,
+};
 /* USER CODE END Variables */
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
-  .stack_size = 128 * 4,
+  .stack_size = 1024 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
 /* Definitions for Robot_arm_ctrl */
@@ -78,7 +91,8 @@ const osThreadAttr_t Route_planning_attributes = {
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
-
+void VisionUart_App(void *argument);
+void Mission_App(void *argument);
 /* USER CODE END FunctionPrototypes */
 
 void StartDefaultTask(void *argument);
@@ -97,6 +111,8 @@ void MX_FREERTOS_Init(void) {
   /* USER CODE BEGIN Init */
   DecisionTask_Init();
   RoutePlanning_Init();
+  VisionUart_Init();
+  Mission_Init();
   /* USER CODE END Init */
 
   /* USER CODE BEGIN RTOS_MUTEX */
@@ -129,7 +145,8 @@ void MX_FREERTOS_Init(void) {
   Route_planningHandle = osThreadNew(Route_planning_App, NULL, &Route_planning_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
-  /* add threads, ... */
+  Vision_uartHandle = osThreadNew(VisionUart_App, NULL, &Vision_uart_attributes);
+  MissionHandle = osThreadNew(Mission_App, NULL, &Mission_attributes);
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
@@ -149,6 +166,8 @@ void StartDefaultTask(void *argument)
 {
   /* USER CODE BEGIN StartDefaultTask */
   (void)argument;
+
+  /* Vision acquisition is armed by the mission task on a key press. */
 
   /* Infinite loop */
   for(;;)

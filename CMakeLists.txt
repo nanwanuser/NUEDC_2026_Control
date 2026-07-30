@@ -44,34 +44,41 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
+    App/drivers/buzzer/buzzer.c
+    App/drivers/key/key.c
     App/drivers/pd42s1/pd42s1.c
     App/drivers/servo/Servo.c
     App/lib/kalman_filter/KalmanFilter.c
     App/lib/max485/max485.c
     App/lib/decision/decision.c
     App/lib/trajectory/trajectory.c
-    App/lib/vision_json/vision_json.c
+    App/lib/vision_protocol/vision_protocol.c
+    App/lib/vision_uart/vision_uart.c
     Task/crane_control/crane_control.c
     Task/crane_control/crane_control_config.c
     Task/crane_control/crane_lift_trigger.c
     Task/crane_control/crane_control_task.c
     Task/decision/decision_task.c
+    Task/mission/mission.c
     Task/route_planning/route_planning.c
 )
 
 
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/App/drivers/buzzer
+    ${CMAKE_CURRENT_SOURCE_DIR}/App/drivers/key
     ${CMAKE_CURRENT_SOURCE_DIR}/App/drivers/pd42s1
     ${CMAKE_CURRENT_SOURCE_DIR}/App/drivers/servo
     ${CMAKE_CURRENT_SOURCE_DIR}/App/lib/kalman_filter
     ${CMAKE_CURRENT_SOURCE_DIR}/App/lib/max485
     ${CMAKE_CURRENT_SOURCE_DIR}/App/lib/decision
     ${CMAKE_CURRENT_SOURCE_DIR}/App/lib/trajectory
-    ${CMAKE_CURRENT_SOURCE_DIR}/App/lib/vision_json
-    ${CMAKE_CURRENT_SOURCE_DIR}/App/third_party/jsmn
+    ${CMAKE_CURRENT_SOURCE_DIR}/App/lib/vision_protocol
+    ${CMAKE_CURRENT_SOURCE_DIR}/App/lib/vision_uart
     ${CMAKE_CURRENT_SOURCE_DIR}/Task/crane_control
     ${CMAKE_CURRENT_SOURCE_DIR}/Task/decision
+    ${CMAKE_CURRENT_SOURCE_DIR}/Task/mission
     ${CMAKE_CURRENT_SOURCE_DIR}/Task/route_planning
 )
 
