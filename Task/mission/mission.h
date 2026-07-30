@@ -34,6 +34,26 @@ typedef enum {
     MISSION_STATE_TIMEOUT
 } MissionState;
 
+/* Why an acquisition failed, beeped out after the failure tone. The numeric
+   value is the number of short beeps, so keep the codes small and ordered from
+   "nothing arrived" to "arrived but unusable". */
+typedef enum {
+    MISSION_DIAG_NONE = 0,
+    /* No bytes at all on USART1: wiring, the camera's /dev/ttyS0, or a baud
+       mismatch. */
+    MISSION_DIAG_NO_DATA = 1,
+    /* Bytes arrived but no frame ever decoded: framing, CRC, or byte order. */
+    MISSION_DIAG_FRAME_REJECTED = 2,
+    /* Valid frames arrived but never agreed three times running, so the pieces
+       were still moving or the measurement is jittering. */
+    MISSION_DIAG_NOT_STABLE = 3,
+    /* The ring buffer overran, so the task is not draining USART1 fast
+       enough. */
+    MISSION_DIAG_RX_OVERFLOW = 4,
+    /* A stable frame was handed over but the decision refused it. */
+    MISSION_DIAG_SUBMIT_REFUSED = 5
+} MissionDiagnosis;
+
 typedef struct {
     MissionId mission;
     MissionState state;
@@ -47,6 +67,14 @@ typedef struct {
     /* Why the crane stopped, which is the usual reason a run fails during
        debugging: a target outside the boom or reach travel. */
     CraneControlStatus crane_status;
+    /* Set when a run ends in FAILED or TIMEOUT during acquisition. */
+    MissionDiagnosis diagnosis;
+    /* Copied from the vision task at the moment the run ended, so a debugger or
+       host can read the counters without racing the acquisition. */
+    uint32_t valid_frame_count;
+    uint32_t invalid_frame_count;
+    uint32_t dropped_byte_count;
+    uint8_t stable_count;
 } MissionOutput;
 
 void Mission_Init(void);

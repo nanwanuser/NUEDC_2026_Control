@@ -23,6 +23,13 @@
 #define MISSION_FAIL_BEEP_MS        150U
 #define MISSION_FAIL_BEEP_GAP_MS    150U
 #define MISSION_FAIL_BEEP_COUNT     3U
+/* Diagnostic burst that follows a failure: a long lead-in, then one short beep
+   per diagnosis code, so an acquisition problem can be told apart from a
+   protocol problem without attaching a debugger. */
+#define MISSION_DIAG_LEAD_MS        400U
+#define MISSION_DIAG_GAP_MS         250U
+#define MISSION_DIAG_BEEP_MS        100U
+#define MISSION_DIAG_BEEP_GAP_MS    200U
 
 /* The crane's frame is the authority on where things are: its origin sits at the
    column, and the boom's zero heading points away from it. Rather than restate
@@ -262,6 +269,50 @@ static void signal_failure(void)
     }
 }
 
+/* Turns the vision task's counters into the one number that says why the
+   acquisition failed. The counters distinguish cases the three-beep failure
+   tone cannot: nothing on the wire, bytes that never formed a frame, frames
+   rejected by the decoder, and valid frames that never agreed three times. */
+static MissionDiagnosis diagnose_acquire_failure(const VisionUartOutput *vision)
+{
+    if (vision->valid_frame_count == 0U) {
+        if (vision->dropped_byte_count != 0U) {
+            return MISSION_DIAG_RX_OVERFLOW;
+        }
+        if (vision->invalid_frame_count == 0U) {
+            return MISSION_DIAG_NO_DATA;
+        }
+        return MISSION_DIAG_FRAME_REJECTED;
+    }
+    if (vision->state == VISION_UART_STATE_ERROR) {
+        return MISSION_DIAG_SUBMIT_REFUSED;
+    }
+    return MISSION_DIAG_NOT_STABLE;
+}
+
+/* Long tone, pause, then `code` short beeps. Codes are small on purpose so the
+   count stays easy to hear over the mechanism. */
+static void signal_diagnosis(MissionDiagnosis code)
+{
+    uint32_t index;
+
+    if (code == MISSION_DIAG_NONE) {
+        return;
+    }
+
+    (void)buzzer_beep(&Mission_Buzzer, MISSION_DIAG_LEAD_MS);
+    osDelay(MISSION_DIAG_LEAD_MS);
+    buzzer_off(&Mission_Buzzer);
+    osDelay(MISSION_DIAG_GAP_MS);
+
+    for (index = 0U; index < (uint32_t)code; ++index) {
+        (void)buzzer_beep(&Mission_Buzzer, MISSION_DIAG_BEEP_MS);
+        osDelay(MISSION_DIAG_BEEP_MS);
+        buzzer_off(&Mission_Buzzer);
+        osDelay(MISSION_DIAG_BEEP_GAP_MS);
+    }
+}
+
 void Mission_App(void *argument)
 {
     MissionOutput output;
@@ -316,6 +367,13 @@ void Mission_App(void *argument)
             output.elapsed_ms = elapsed_ms(run_start_tick, now_tick);
             VisionUart_GetOutput(&vision_output);
 
+            /* Carry the counters continuously, so they are already in place if
+               the run ends on this pass. */
+            output.valid_frame_count = vision_output.valid_frame_count;
+            output.invalid_frame_count = vision_output.invalid_frame_count;
+            output.dropped_byte_count = vision_output.dropped_byte_count;
+            output.stable_count = vision_output.stable_count;
+
             if (vision_output.arm_id == output.run_id &&
                 vision_output.state == VISION_UART_STATE_SUBMITTED) {
                 output.state = MISSION_STATE_RUNNING;
@@ -326,10 +384,15 @@ void Mission_App(void *argument)
                 VisionUart_Abort();
                 output.state = MISSION_STATE_TIMEOUT;
             }
+            if (output.state == MISSION_STATE_FAILED ||
+                output.state == MISSION_STATE_TIMEOUT) {
+                output.diagnosis = diagnose_acquire_failure(&vision_output);
+            }
             publish_output(&output);
             if (output.state == MISSION_STATE_FAILED ||
                 output.state == MISSION_STATE_TIMEOUT) {
                 signal_failure();
+                signal_diagnosis(output.diagnosis);
             }
         } else if (output.state == MISSION_STATE_RUNNING) {
             CraneControlState crane_state;
