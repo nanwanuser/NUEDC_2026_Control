@@ -51,7 +51,10 @@ typedef enum {
        enough. */
     MISSION_DIAG_RX_OVERFLOW = 4,
     /* A stable frame was handed over but the decision refused it. */
-    MISSION_DIAG_SUBMIT_REFUSED = 5
+    MISSION_DIAG_SUBMIT_REFUSED = 5,
+    /* USART1 reception never started or stopped re-arming, which is a firmware
+       fault rather than anything to do with the camera. */
+    MISSION_DIAG_RX_FAILED = 6
 } MissionDiagnosis;
 
 typedef struct {

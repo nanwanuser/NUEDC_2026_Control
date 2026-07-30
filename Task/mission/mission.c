@@ -275,6 +275,13 @@ static void signal_failure(void)
    rejected by the decoder, and valid frames that never agreed three times. */
 static MissionDiagnosis diagnose_acquire_failure(const VisionUartOutput *vision)
 {
+    /* Check the error state first: a receiver that never started reports zero
+       frames, which would otherwise read as "nothing arrived". */
+    if (vision->state == VISION_UART_STATE_ERROR) {
+        return (vision->valid_frame_count == 0U)
+            ? MISSION_DIAG_RX_FAILED
+            : MISSION_DIAG_SUBMIT_REFUSED;
+    }
     if (vision->valid_frame_count == 0U) {
         if (vision->dropped_byte_count != 0U) {
             return MISSION_DIAG_RX_OVERFLOW;
@@ -283,9 +290,6 @@ static MissionDiagnosis diagnose_acquire_failure(const VisionUartOutput *vision)
             return MISSION_DIAG_NO_DATA;
         }
         return MISSION_DIAG_FRAME_REJECTED;
-    }
-    if (vision->state == VISION_UART_STATE_ERROR) {
-        return MISSION_DIAG_SUBMIT_REFUSED;
     }
     return MISSION_DIAG_NOT_STABLE;
 }
