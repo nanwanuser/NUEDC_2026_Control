@@ -25,6 +25,10 @@ typedef struct {
     uint32_t valid_frame_count;
     uint32_t invalid_frame_count;
     uint32_t dropped_byte_count;
+    /* Framing, noise, parity and overrun errors reported by USART1. Non-zero
+       means something is driving RX, so it separates a link that is not
+       connected from one where the two ends disagree on baud rate or levels. */
+    uint32_t line_error_count;
     /* Mirrors the armed request so the caller can tell which run this is. */
     uint32_t arm_id;
 } VisionUartOutput;

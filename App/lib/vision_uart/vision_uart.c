@@ -23,6 +23,7 @@ static volatile uint16_t VisionUart_RxTail;
 static volatile uint8_t VisionUart_Receiving;
 static volatile uint8_t VisionUart_RxOverflow;
 static volatile uint32_t VisionUart_DroppedBytes;
+static volatile uint32_t VisionUart_LineErrors;
 static volatile VisionUartOutput VisionUart_Output;
 static volatile DecisionTaskRequest VisionUart_ArmedRequest;
 static volatile uint32_t VisionUart_ArmedId;
@@ -66,6 +67,7 @@ static uint8_t start_receive(void)
     VisionUart_RxTail = 0U;
     VisionUart_RxOverflow = 0U;
     VisionUart_DroppedBytes = 0U;
+    VisionUart_LineErrors = 0U;
     taskEXIT_CRITICAL();
 
     VisionUart_Receiving = 1U;
@@ -109,6 +111,7 @@ void VisionUart_Init(void)
     VisionUart_Receiving = 0U;
     VisionUart_RxOverflow = 0U;
     VisionUart_DroppedBytes = 0U;
+    VisionUart_LineErrors = 0U;
     VisionUart_ArmPending = 0U;
     VisionUart_AbortRequested = 0U;
     VisionUart_ArmedId = 0U;
@@ -230,6 +233,15 @@ void VisionUart_App(void *argument)
             publish_output(&output);
         }
 
+        /* Published as it changes rather than only on failure. A link that is
+           wired but mismatched produces nothing else to publish, so without
+           this the count would still be sitting in the local copy when the
+           mission times out and reads the output. */
+        if (output.line_error_count != VisionUart_LineErrors) {
+            output.line_error_count = VisionUart_LineErrors;
+            publish_output(&output);
+        }
+
         while (submitted == 0U && ring_pop(&byte) != 0U) {
             VisionProtocolResult result;
 
@@ -287,8 +299,11 @@ void VisionUart_App(void *argument)
         }
 
         /* HAL_UARTEx_ReceiveToIdle_IT can fail to re-arm inside the callback,
-           which would silently stall the acquisition, so surface it. */
-        if (VisionUart_Receiving == 0U) {
+           which would silently stall the acquisition, so surface it. Only while
+           the acquisition is still open: a finished one stops the receiver on
+           purpose, and the `submitted` guard is what keeps that from being read
+           as a stall and overwriting the state published a few lines above. */
+        if (submitted == 0U && VisionUart_Receiving == 0U) {
             output.state = VISION_UART_STATE_ERROR;
             submitted = 1U;
             publish_output(&output);
@@ -331,6 +346,9 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t size)
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
     if (huart == &huart1 && VisionUart_Receiving != 0U) {
+        /* Count before re-arming. Without this, a wire carrying garbage looks
+           exactly like no wire at all: both leave the ring buffer empty. */
+        ++VisionUart_LineErrors;
         (void)HAL_UARTEx_ReceiveToIdle_IT(&huart1,
                                          VisionUart_RxChunk,
                                          VISION_UART_RX_CHUNK_SIZE);

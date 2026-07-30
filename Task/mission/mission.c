@@ -287,7 +287,12 @@ static MissionDiagnosis diagnose_acquire_failure(const VisionUartOutput *vision)
             return MISSION_DIAG_RX_OVERFLOW;
         }
         if (vision->invalid_frame_count == 0U) {
-            return MISSION_DIAG_NO_DATA;
+            /* Line errors mean the wire is live and carrying something the
+               peripheral cannot frame, which is a different fix from a wire
+               that is not connected, so they must not share a code. */
+            return (vision->line_error_count != 0U)
+                ? MISSION_DIAG_RX_LINE_ERROR
+                : MISSION_DIAG_NO_DATA;
         }
         return MISSION_DIAG_FRAME_REJECTED;
     }
@@ -376,6 +381,7 @@ void Mission_App(void *argument)
             output.valid_frame_count = vision_output.valid_frame_count;
             output.invalid_frame_count = vision_output.invalid_frame_count;
             output.dropped_byte_count = vision_output.dropped_byte_count;
+            output.line_error_count = vision_output.line_error_count;
             output.stable_count = vision_output.stable_count;
 
             if (vision_output.arm_id == output.run_id &&

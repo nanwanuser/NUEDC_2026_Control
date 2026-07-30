@@ -54,7 +54,13 @@ typedef enum {
     MISSION_DIAG_SUBMIT_REFUSED = 5,
     /* USART1 reception never started or stopped re-arming, which is a firmware
        fault rather than anything to do with the camera. */
-    MISSION_DIAG_RX_FAILED = 6
+    MISSION_DIAG_RX_FAILED = 6,
+    /* USART1 reported framing, noise or overrun errors but never produced a
+       byte the parser could use. Something is driving RX, so the link is live
+       and the two ends disagree instead: wrong baud rate, inverted levels, or
+       RX shorted. This is what tells a mis-wired link apart from an
+       unconnected one, which reports MISSION_DIAG_NO_DATA. */
+    MISSION_DIAG_RX_LINE_ERROR = 7
 } MissionDiagnosis;
 
 typedef struct {
@@ -77,6 +83,7 @@ typedef struct {
     uint32_t valid_frame_count;
     uint32_t invalid_frame_count;
     uint32_t dropped_byte_count;
+    uint32_t line_error_count;
     uint8_t stable_count;
 } MissionOutput;
 
