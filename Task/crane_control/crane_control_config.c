@@ -27,7 +27,7 @@
 #define CRANE_ORIGIN_X_MM                 (CRANE_A4_LONG_EDGE_MM / 2.0f)
 #define CRANE_ORIGIN_Y_MM                 (-50.0f)
 /* World height assigned to the logical raised state. The lift controller maps
-   that state directly to its fixed 90 deg position. */
+   that state directly to SERVO_LIFT_INIT_ANGLE_DEG. */
 #define CRANE_ORIGIN_Z_MM                 40.0f
 /* World heading the boom holds at local yaw zero, i.e. +Y: from the column that
    points across the sheet's y = 0 edge towards the far edge. */
@@ -54,8 +54,8 @@
    use this value to calculate either commanded angle. */
 #define CRANE_LIFT_ZERO_ANGLE_DEG         SERVO_LIFT_INIT_ANGLE_DEG
 #define CRANE_END_YAW_CENTER_DEG           90.0f
-#define CRANE_YAW_SPEED_RPM               5U
-#define CRANE_REACH_SPEED_RPM             5U
+#define CRANE_YAW_SPEED_RPM               10U
+#define CRANE_REACH_SPEED_RPM             50U
 /* Each waypoint is one fixed absolute-position command, so the drive owns the
    acceleration and braking profile. Lower values produce gentler ramps. */
 #define CRANE_YAW_ACCELERATION            100U
