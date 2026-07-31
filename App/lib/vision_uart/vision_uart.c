@@ -12,7 +12,6 @@
 
 #define VISION_UART_TASK_PERIOD_MS       1U
 #define VISION_UART_FRAME_TIMEOUT_MS     50U
-#define VISION_UART_TX_TIMEOUT_MS        20U
 #define VISION_UART_RX_CHUNK_SIZE        VISION_PROTOCOL_MAX_FRAME_LENGTH
 #define VISION_UART_RX_RING_SIZE         512U
 
@@ -56,8 +55,7 @@ static uint8_t ring_pop(uint8_t *byte)
 
 static uint8_t start_receive(void)
 {
-    /* A previous run de-initialised USART1 after submitting, so bring the
-       peripheral back up before every acquisition. */
+    /* 正常流程只暂停接收而不反初始化 USART1；RESET 分支仅用于外设故障恢复。 */
     if (huart1.gState == HAL_UART_STATE_RESET) {
         MX_USART1_UART_Init();
     }
@@ -84,22 +82,6 @@ static void stop_receive(void)
 {
     VisionUart_Receiving = 0U;
     (void)HAL_UART_AbortReceive(&huart1);
-}
-
-static void send_ack(uint16_t seq, VisionProtocolAckStatus status)
-{
-    uint8_t frame[VISION_PROTOCOL_ACK_FRAME_LENGTH];
-    size_t length = VisionProtocol_EncodeAck(seq,
-                                             status,
-                                             frame,
-                                             sizeof(frame));
-
-    if (length != 0U) {
-        (void)HAL_UART_Transmit(&huart1,
-                               frame,
-                               (uint16_t)length,
-                               VISION_UART_TX_TIMEOUT_MS);
-    }
 }
 
 void VisionUart_Init(void)
@@ -262,21 +244,16 @@ void VisionUart_App(void *argument)
                     request = base_request;
                     request.vision = stable_packet.frame;
                     stop_receive();
-                    /* Only claim acceptance once the decision really took the
-                       request, so the vision host is not told to stop sending
-                       after a failed handover. */
+                    /* 稳定数据只复制一次。暂停本轮接收后立即提交决策；USART1
+                       保持初始化，下一次按键会重新启动 ReceiveToIdle。 */
                     if (DecisionTask_Submit(&request) != 0U) {
                         output.state = VISION_UART_STATE_SUBMITTED;
-                        send_ack(packet.seq, VISION_PROTOCOL_ACK_ACCEPTED);
                     } else {
                         output.state = VISION_UART_STATE_ERROR;
-                        send_ack(packet.seq, VISION_PROTOCOL_ACK_INVALID);
                     }
-                    (void)HAL_UART_DeInit(&huart1);
                     submitted = 1U;
                 } else {
                     output.stable_count = stabilizer.stable_count;
-                    send_ack(packet.seq, VISION_PROTOCOL_ACK_OK);
                 }
                 publish_output(&output);
             } else if (result != VISION_PROTOCOL_RESULT_NONE) {
