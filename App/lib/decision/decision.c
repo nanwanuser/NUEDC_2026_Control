@@ -8,7 +8,6 @@
 #define DECISION_PI                    3.14159265358979323846f
 #define DECISION_GEOMETRY_EPSILON_MM   0.05f
 #define DECISION_MIN_POLYGON_AREA_MM2  1.0f
-#define DECISION_GRASP_GRID_DIVISIONS  12U
 #define DECISION_WAYPOINT_EPSILON_MM   0.1f
 #define DECISION_WAYPOINT_EPSILON_DEG  0.1f
 
@@ -256,63 +255,6 @@ static float minimum_edge_distance(DecisionPoint point,
         }
     }
     return minimum;
-}
-
-static DecisionPoint find_grasp_point(const DecisionPiece *piece)
-{
-    DecisionPoint best = piece->vertices[0];
-    float best_clearance = -1.0f;
-    float min_x = FLT_MAX;
-    float max_x = -FLT_MAX;
-    float min_y = FLT_MAX;
-    float max_y = -FLT_MAX;
-    uint32_t x_index;
-    uint32_t y_index;
-    uint8_t vertex_index;
-
-    if (point_polygon_location(piece->center,
-                               piece->vertices,
-                               piece->vertex_count) >= 0) {
-        best = piece->center;
-        best_clearance = minimum_edge_distance(best,
-                                               piece->vertices,
-                                               piece->vertex_count);
-    }
-
-    for (vertex_index = 0U; vertex_index < piece->vertex_count; ++vertex_index) {
-        DecisionPoint vertex = piece->vertices[vertex_index];
-        if (vertex.x_mm < min_x) min_x = vertex.x_mm;
-        if (vertex.x_mm > max_x) max_x = vertex.x_mm;
-        if (vertex.y_mm < min_y) min_y = vertex.y_mm;
-        if (vertex.y_mm > max_y) max_y = vertex.y_mm;
-    }
-
-    for (x_index = 1U; x_index < DECISION_GRASP_GRID_DIVISIONS; ++x_index) {
-        for (y_index = 1U; y_index < DECISION_GRASP_GRID_DIVISIONS; ++y_index) {
-            DecisionPoint candidate;
-            float clearance;
-
-            candidate.x_mm = min_x + (max_x - min_x) *
-                (float)x_index / (float)DECISION_GRASP_GRID_DIVISIONS;
-            candidate.y_mm = min_y + (max_y - min_y) *
-                (float)y_index / (float)DECISION_GRASP_GRID_DIVISIONS;
-
-            if (point_polygon_location(candidate,
-                                       piece->vertices,
-                                       piece->vertex_count) < 0) {
-                continue;
-            }
-
-            clearance = minimum_edge_distance(candidate,
-                                               piece->vertices,
-                                               piece->vertex_count);
-            if (clearance > best_clearance) {
-                best = candidate;
-                best_clearance = clearance;
-            }
-        }
-    }
-    return best;
 }
 
 static void fill_move(const DecisionPiece *piece,
@@ -901,7 +843,9 @@ DecisionResult Decision_SolveGeneral(const DecisionVisionFrame *frame,
     (void)memset(plan, 0, sizeof(*plan));
     plan->seq = frame->seq;
     for (piece_index = 0U; piece_index < search.piece_count; ++piece_index) {
-        DecisionPoint grasp = find_grasp_point(&search.pieces[piece_index]);
+        /* The camera supplies the calibrated magnet target. Preserve it exactly
+           instead of replacing it with a grid-searched polygon interior point. */
+        DecisionPoint grasp = search.pieces[piece_index].center;
         DecisionPoint layout_grasp = transform_point(
             &search.best_transforms[piece_index], grasp);
         DecisionPoint place;

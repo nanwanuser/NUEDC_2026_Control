@@ -40,7 +40,7 @@
 #define CRANE_STARTUP_BOOM_YAW_DEG        90.0f
 #define CRANE_REACH_ZERO_RADIUS_MM        70.0f
 #define CRANE_REACH_TRAVEL_MM             200.0f
-#define CRANE_REACH_MM_PER_MOTOR_REV      90.3062f
+#define CRANE_REACH_MM_PER_MOTOR_REV      92.4555f
 #define CRANE_GEAR_TRAVEL_MM_PER_REV      94.2478f
 #define CRANE_MIN_BOOM_YAW_DEG            (-90.0f)
 #define CRANE_MAX_BOOM_YAW_DEG            90.0f

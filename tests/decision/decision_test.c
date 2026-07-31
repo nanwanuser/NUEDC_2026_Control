@@ -38,8 +38,7 @@ static void set_piece(DecisionPiece *piece,
         piece->vertices[index].x_mm = xy[2U * index];
         piece->vertices[index].y_mm = xy[2U * index + 1U];
     }
-    /* The centre only has to be inside the piece; the solver recomputes the
-       grasp point itself. */
+    /* The centre is the pick point supplied by vision. */
     for (index = 0U; index < vertex_count; ++index) {
         piece->center.x_mm += piece->vertices[index].x_mm;
         piece->center.y_mm += piece->vertices[index].y_mm;
@@ -465,6 +464,39 @@ static void test_trajectory_stops_above_pick_and_place(void)
           "transfer descended before the place axes were confirmed");
 }
 
+static void test_pick_uses_vision_center(void)
+{
+    DecisionVisionFrame frame;
+    DecisionConfig config;
+    DecisionPlan plan;
+    DecisionPoint expected_center;
+    uint8_t piece_id;
+    uint8_t move_index;
+    uint8_t found = 0U;
+
+    build_frame(&frame, 0.0f);
+    frame.pieces[0].center.x_mm += 3.0f;
+    frame.pieces[0].center.y_mm += 2.0f;
+    expected_center = frame.pieces[0].center;
+    piece_id = frame.pieces[0].id;
+    Decision_GetDefaultConfig(&config);
+
+    check(Decision_Solve(&frame, &config, &plan) == DECISION_RESULT_OK,
+          "vision-center frame did not solve");
+    for (move_index = 0U; move_index < plan.move_count; ++move_index) {
+        if (plan.moves[move_index].piece_id == piece_id) {
+            found = 1U;
+            check(fabsf(plan.moves[move_index].pick.x_mm -
+                        expected_center.x_mm) < 0.001f &&
+                      fabsf(plan.moves[move_index].pick.y_mm -
+                            expected_center.y_mm) < 0.001f,
+                  "pick did not use the center supplied by vision");
+            break;
+        }
+    }
+    check(found != 0U, "vision-center piece was missing from the plan");
+}
+
 int main(void)
 {
     test_exact_pieces();
@@ -477,6 +509,7 @@ int main(void)
     test_slanted_pieces_are_handled();
     test_halves_are_fixed_by_the_shared_frame();
     test_trajectory_stops_above_pick_and_place();
+    test_pick_uses_vision_center();
 
     if (failures != 0) {
         printf("%d decision test(s) failed\n", failures);
