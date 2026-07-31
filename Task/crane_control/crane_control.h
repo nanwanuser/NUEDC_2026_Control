@@ -90,6 +90,8 @@ typedef struct {
     uint8_t yaw_at_target;
     uint8_t reach_at_target;
     uint8_t axes_at_target;
+    int32_t yaw_position_error_units;
+    int32_t reach_position_error_units;
     uint8_t initialized;
 } CraneControlState;
 
@@ -134,8 +136,8 @@ void CraneControl_Update(void);
  */
 void CraneControl_GetState(CraneControlState *state);
 
-/** Immediately write a full-speed lift move to the fixed 110 degree raised or
- * 180 degree lowered position. */
+/** Immediately write a full-speed lift move to the fixed raised or lowered
+ * endpoint configured by the servo driver. */
 CraneControlStatus CraneControl_CommandLift(CraneLiftPosition position);
 
 /** Queue an electromagnet command in the crane task. */

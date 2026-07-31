@@ -49,6 +49,18 @@ static void pd42s1_write_u32_be(uint8_t *output, uint32_t value)
     output[3] = (uint8_t)value;
 }
 
+static int32_t pd42s1_read_i32_be(const uint8_t *input)
+{
+    const uint32_t raw = ((uint32_t)input[0] << 24U) |
+                         ((uint32_t)input[1] << 16U) |
+                         ((uint32_t)input[2] << 8U) |
+                         (uint32_t)input[3];
+
+    return raw <= (uint32_t)INT32_MAX
+               ? (int32_t)raw
+               : (int32_t)((int64_t)raw - 0x100000000LL);
+}
+
 static max485_status_t pd42s1_send_position(uint8_t motor_id,
                                             pd42s1_command_t command,
                                             pd42s1_direction_t direction,
@@ -233,6 +245,67 @@ max485_status_t pd42s1_read_home_state(uint8_t motor_id,
         return MAX485_STATUS_UNEXPECTED_FRAME;
     }
     *state = (pd42s1_home_state_t)frame.payload[1];
+    return MAX485_STATUS_OK;
+}
+
+max485_status_t pd42s1_read_realtime_position(uint8_t motor_id,
+                                             int32_t *position_units,
+                                             uint32_t timeout_ms)
+{
+    max485_frame_t frame;
+    max485_status_t status;
+
+    if (!pd42s1_is_supported_motor(motor_id) || position_units == NULL) {
+        return MAX485_STATUS_INVALID_ARGUMENT;
+    }
+    status = max485_send_frame(motor_id,
+                               PD42S1_COMMAND_READ_REALTIME_POSITION,
+                               NULL, 0U, PD42S1_UART_TIMEOUT_MS);
+    if (status != MAX485_STATUS_OK) {
+        return status;
+    }
+    status = max485_receive_frame(&frame, timeout_ms);
+    if (status != MAX485_STATUS_OK) {
+        return status;
+    }
+    if (frame.address != motor_id ||
+        frame.function != (uint8_t)PD42S1_COMMAND_READ_REALTIME_POSITION ||
+        frame.payload_length != 5U ||
+        frame.payload[0] != PD42S1_RESULT_SUCCESS) {
+        return MAX485_STATUS_UNEXPECTED_FRAME;
+    }
+    *position_units = pd42s1_read_i32_be(&frame.payload[1]);
+    return MAX485_STATUS_OK;
+}
+
+max485_status_t pd42s1_read_position_error(uint8_t motor_id,
+                                          int32_t *position_error_units,
+                                          uint32_t timeout_ms)
+{
+    max485_frame_t frame;
+    max485_status_t status;
+
+    if (!pd42s1_is_supported_motor(motor_id) ||
+        position_error_units == NULL) {
+        return MAX485_STATUS_INVALID_ARGUMENT;
+    }
+    status = max485_send_frame(motor_id,
+                               PD42S1_COMMAND_READ_POSITION_ERROR,
+                               NULL, 0U, PD42S1_UART_TIMEOUT_MS);
+    if (status != MAX485_STATUS_OK) {
+        return status;
+    }
+    status = max485_receive_frame(&frame, timeout_ms);
+    if (status != MAX485_STATUS_OK) {
+        return status;
+    }
+    if (frame.address != motor_id ||
+        frame.function != (uint8_t)PD42S1_COMMAND_READ_POSITION_ERROR ||
+        frame.payload_length != 5U ||
+        frame.payload[0] != PD42S1_RESULT_SUCCESS) {
+        return MAX485_STATUS_UNEXPECTED_FRAME;
+    }
+    *position_error_units = pd42s1_read_i32_be(&frame.payload[1]);
     return MAX485_STATUS_OK;
 }
 

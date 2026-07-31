@@ -40,12 +40,13 @@
 #define CRANE_STARTUP_BOOM_YAW_DEG        90.0f
 #define CRANE_REACH_ZERO_RADIUS_MM        70.0f
 #define CRANE_REACH_TRAVEL_MM             200.0f
+#define CRANE_REACH_MM_PER_MOTOR_REV      90.3062f
 #define CRANE_GEAR_TRAVEL_MM_PER_REV      94.2478f
 #define CRANE_MIN_BOOM_YAW_DEG            (-90.0f)
 #define CRANE_MAX_BOOM_YAW_DEG            90.0f
 /* The lift is a two-position servo. These Z values describe the planner's raised
-   and lowered states only; the control layer commands the corresponding physical
-   positions directly: 110 deg when raised and 180 deg when lowered. */
+   and lowered states only; the control layer commands the physical endpoints
+   configured by the servo driver. */
 #define CRANE_MIN_LOCAL_Z_MM              (-45.0f)
 /* Logical travel height; the lift controller maps it to the fixed raised angle. */
 #define CRANE_MAX_LOCAL_Z_MM              0.0f
@@ -77,7 +78,7 @@
  * far end of its travel: the reach's full 160 mm stroke, or the boom's whole
  * 180 deg arc. Arriving early costs only the remainder spent resting on the stop. */
 #define CRANE_HOME_ON_STARTUP             1U
-#define CRANE_HOME_CURRENT_MA             400U
+#define CRANE_HOME_CURRENT_MA             800U
 #define CRANE_HOME_PUSH_MS                3000U
 #define CRANE_DEFAULT_HOME_CURRENT_MA     400U
 #define CRANE_DEFAULT_HOME_PUSH_MS        3000U
@@ -138,7 +139,7 @@ void CraneControl_CustomizeConfig(CraneControlConfig *config)
     config->startup_boom_yaw_deg = CRANE_STARTUP_BOOM_YAW_DEG;
     config->yaw_motor_revolutions_per_crane_revolution = 1.0f;
     config->reach_zero_radius_mm = CRANE_REACH_ZERO_RADIUS_MM;
-    config->reach_mm_per_motor_revolution = CRANE_GEAR_TRAVEL_MM_PER_REV;
+    config->reach_mm_per_motor_revolution = CRANE_REACH_MM_PER_MOTOR_REV;
     config->lift_mm_per_degree = CRANE_GEAR_TRAVEL_MM_PER_REV / 360.0f;
     config->lift_zero_angle_deg = CRANE_LIFT_ZERO_ANGLE_DEG;
     config->min_boom_yaw_deg = CRANE_MIN_BOOM_YAW_DEG;

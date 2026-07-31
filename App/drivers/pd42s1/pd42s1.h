@@ -29,6 +29,8 @@ typedef enum {
     PD42S1_COMMAND_TRIGGER_HOME = 0x92,
     PD42S1_COMMAND_ABORT_HOME = 0x93,
     PD42S1_COMMAND_READ_HOME_STATE = 0x96,
+    PD42S1_COMMAND_READ_REALTIME_POSITION = 0x2A,
+    PD42S1_COMMAND_READ_POSITION_ERROR = 0x2B,
     PD42S1_COMMAND_READ_ARRIVAL = 0x30,
     PD42S1_COMMAND_TORQUE = 0xF0,
     PD42S1_COMMAND_ABSOLUTE_POSITION = 0xF2,
@@ -207,6 +209,26 @@ max485_status_t pd42s1_receive_home_reply(uint8_t motor_id,
 max485_status_t pd42s1_read_home_state(uint8_t motor_id,
                                       pd42s1_home_state_t *state,
                                       uint32_t timeout_ms);
+
+/**
+ * @brief Read the signed real-time motor position (0x2A).
+ * @param position_units Receives the drive position; 51200 units equal one
+ *        motor revolution.
+ * @note Sends the query and consumes its five-byte response payload.
+ */
+max485_status_t pd42s1_read_realtime_position(uint8_t motor_id,
+                                             int32_t *position_units,
+                                             uint32_t timeout_ms);
+
+/**
+ * @brief Read the signed closed-loop position error (0x2B).
+ * @param position_error_units Receives target minus actual position; 51200 units
+ *        equal one motor revolution.
+ * @note Sends the query and consumes its five-byte response payload.
+ */
+max485_status_t pd42s1_read_position_error(uint8_t motor_id,
+                                          int32_t *position_error_units,
+                                          uint32_t timeout_ms);
 
 /**
  * @brief Read the drive's physical in-position flag (0x30).

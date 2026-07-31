@@ -24,6 +24,9 @@
    past anything the mechanism would notice. */
 #define CRANE_LIMIT_TOLERANCE_MM          0.05f
 #define CRANE_LIMIT_TOLERANCE_DEG         0.05f
+/* An axis is accepted when the drive's signed 0x2B position error is strictly
+   inside this band. */
+#define CRANE_POSITION_ERROR_THRESHOLD_UNITS 100U
 /* Consecutive bus faults tolerated before the run is abandoned.
  *
  * A single lost reply used to end the run: mission.c stops the moment
@@ -240,12 +243,39 @@ static void publish_arrival_flags(uint8_t yaw_at_target,
     taskEXIT_CRITICAL();
 }
 
+static uint8_t position_units_are_within_threshold(int32_t position_units)
+{
+    const uint32_t magnitude = position_units < 0
+                                   ? (uint32_t)(-(int64_t)position_units)
+                                   : (uint32_t)position_units;
+
+    return (uint8_t)(magnitude < CRANE_POSITION_ERROR_THRESHOLD_UNITS);
+}
+
+static void publish_position_errors(int32_t yaw_error_units,
+                                    int32_t reach_error_units)
+{
+    const uint8_t yaw_at_target =
+        position_units_are_within_threshold(yaw_error_units);
+    const uint8_t reach_at_target =
+        position_units_are_within_threshold(reach_error_units);
+
+    taskENTER_CRITICAL();
+    s_state.yaw_position_error_units = yaw_error_units;
+    s_state.reach_position_error_units = reach_error_units;
+    s_state.yaw_at_target = yaw_at_target;
+    s_state.reach_at_target = reach_at_target;
+    s_state.axes_at_target =
+        (uint8_t)(yaw_at_target != 0U && reach_at_target != 0U);
+    taskEXIT_CRITICAL();
+}
+
 /* The lift uses two fixed positions. Planner Z still selects whether the retained
    target is raised or lowered, but it is not converted into an angle. */
 static float lift_angle_for_z(float z_mm)
 {
     return z_mm < s_config.max_z_mm
-               ? SERVO_MAX_ANGLE_DEG
+               ? SERVO_LIFT_LOWERED_ANGLE_DEG
                : SERVO_LIFT_RAISED_ANGLE_DEG;
 }
 
@@ -499,6 +529,21 @@ static CraneControlStatus clear_axis_positions(void)
             worst = status;
         }
     }
+    if (worst != CRANE_CONTROL_OK) {
+        return worst;
+    }
+    for (index = 0U; index < 2U; ++index) {
+        int32_t position_units;
+        const max485_status_t status = pd42s1_read_realtime_position(
+            motor_ids[index], &position_units, PD42S1_UART_TIMEOUT_MS);
+
+        if (status != MAX485_STATUS_OK) {
+            return CRANE_CONTROL_TRANSPORT_ERROR;
+        }
+        if (position_units_are_within_threshold(position_units) == 0U) {
+            return CRANE_CONTROL_DRIVE_REJECTED;
+        }
+    }
     s_yaw_position.position_units = 0;
     s_yaw_position.valid = 1U;
     s_reach_position.position_units = 0;
@@ -506,19 +551,13 @@ static CraneControlStatus clear_axis_positions(void)
     return worst;
 }
 
-/* Commands both axes to stay exactly where they are, as a position move.
+/* Selects a position mode without moving either axis.
  *
- * Absolute position zero, sent straight after the counters were cleared, names the
- * position each drive is already reading - and the manual notes that an absolute
- * target already reached produces no motion. So this changes the working mode
- * without moving the mechanism, and it changes it to the same mode the control loop
- * uses (see send_motor_command()) rather than to a second one the first tick would
- * then have to switch out of. Speed and acceleration still have to be legal values
- * even though nothing travels.
- *
- * Depends on running after clear_axis_positions(): absolute zero is only the current
- * position because the counters were just zeroed there. */
-static CraneControlStatus hold_axis_positions(void)
+ * Relative zero is used before 0xF8 because this drive rejects clearing while
+ * communication torque mode is active. Absolute zero is used after 0xF8 to enter
+ * the mode used by task targets. Neither command produces physical motion. */
+static CraneControlStatus set_axis_position_mode_zero(
+    pd42s1_command_t command)
 {
     static const uint8_t motor_ids[2] = {
         PD42S1_MOTOR_1_ID, PD42S1_MOTOR_2_ID
@@ -535,9 +574,19 @@ static CraneControlStatus hold_axis_positions(void)
                                          ? s_config.yaw_acceleration
                                          : s_config.reach_acceleration;
         CraneControlStatus status = CRANE_CONTROL_OK;
-        max485_status_t bus_status =
-            pd42s1_move_absolute(motor_id, PD42S1_DIRECTION_FORWARD,
-                                 acceleration, speed_rpm, 0U);
+        max485_status_t bus_status;
+
+        if (command == PD42S1_COMMAND_RELATIVE_POSITION) {
+            bus_status = pd42s1_move_relative(
+                motor_id, PD42S1_DIRECTION_FORWARD,
+                acceleration, speed_rpm, 0U);
+        } else if (command == PD42S1_COMMAND_ABSOLUTE_POSITION) {
+            bus_status = pd42s1_move_absolute(
+                motor_id, PD42S1_DIRECTION_FORWARD,
+                acceleration, speed_rpm, 0U);
+        } else {
+            return CRANE_CONTROL_INVALID_CONFIG;
+        }
 
         if (bus_status != MAX485_STATUS_OK) {
             status = CRANE_CONTROL_TRANSPORT_ERROR;
@@ -545,7 +594,7 @@ static CraneControlStatus hold_axis_positions(void)
             pd42s1_result_t result;
 
             bus_status = pd42s1_receive_response(
-                motor_id, PD42S1_COMMAND_ABSOLUTE_POSITION, &result,
+                motor_id, command, &result,
                 PD42S1_UART_TIMEOUT_MS);
             if (bus_status != MAX485_STATUS_OK) {
                 status = CRANE_CONTROL_TRANSPORT_ERROR;
@@ -572,7 +621,16 @@ static CraneControlStatus hold_axis_positions(void)
  * is the fallback for when homing is switched off or did not finish. */
 static CraneControlStatus establish_axis_zero(void)
 {
-    const CraneControlStatus worst = clear_axis_positions();
+    CraneControlStatus status = set_axis_position_mode_zero(
+        PD42S1_COMMAND_RELATIVE_POSITION);
+
+    if (status == CRANE_CONTROL_OK) {
+        status = clear_axis_positions();
+    }
+    if (status == CRANE_CONTROL_OK) {
+        status = set_axis_position_mode_zero(
+            PD42S1_COMMAND_ABSOLUTE_POSITION);
+    }
 
     /* Both drives now read zero, and zero is the pose the mechanism is standing
        in, which without switches has to be taken to be the park pose. */
@@ -580,13 +638,13 @@ static CraneControlStatus establish_axis_zero(void)
     s_reach_datum_mm = s_config.reach_zero_radius_mm;
     /* Reported so a caller can beep about a quiet drive, but not a veto: see
        CraneControl_Init(). */
-    return worst;
+    return status;
 }
 
 static CraneControlStatus update_arrival_state(void)
 {
-    pd42s1_arrival_t yaw_arrival;
-    pd42s1_arrival_t reach_arrival;
+    int32_t yaw_error_units;
+    int32_t reach_error_units;
     max485_status_t status;
 
     if (s_axis_target_active == 0U) {
@@ -598,23 +656,24 @@ static CraneControlStatus update_arrival_state(void)
         return CRANE_CONTROL_OK;
     }
 
-    status = pd42s1_read_arrival_flag(PD42S1_MOTOR_1_ID, &yaw_arrival,
-                                      PD42S1_UART_TIMEOUT_MS);
+    status = pd42s1_read_position_error(PD42S1_MOTOR_1_ID,
+                                        &yaw_error_units,
+                                        PD42S1_UART_TIMEOUT_MS);
     if (status != MAX485_STATUS_OK) {
         publish_arrival_flags(0U, 0U);
         return CRANE_CONTROL_TRANSPORT_ERROR;
     }
-    status = pd42s1_read_arrival_flag(PD42S1_MOTOR_2_ID, &reach_arrival,
-                                      PD42S1_UART_TIMEOUT_MS);
+    status = pd42s1_read_position_error(PD42S1_MOTOR_2_ID,
+                                        &reach_error_units,
+                                        PD42S1_UART_TIMEOUT_MS);
     if (status != MAX485_STATUS_OK) {
-        publish_arrival_flags((uint8_t)(yaw_arrival ==
-                                        PD42S1_ARRIVAL_REACHED), 0U);
+        publish_arrival_flags(position_units_are_within_threshold(yaw_error_units),
+                              0U);
         return CRANE_CONTROL_TRANSPORT_ERROR;
     }
-    publish_arrival_flags((uint8_t)(yaw_arrival == PD42S1_ARRIVAL_REACHED),
-                          (uint8_t)(reach_arrival == PD42S1_ARRIVAL_REACHED));
-    if (yaw_arrival == PD42S1_ARRIVAL_REACHED &&
-        reach_arrival == PD42S1_ARRIVAL_REACHED) {
+    publish_position_errors(yaw_error_units, reach_error_units);
+    if (position_units_are_within_threshold(yaw_error_units) != 0U &&
+        position_units_are_within_threshold(reach_error_units) != 0U) {
         s_axis_target_active = 0U;
         return CRANE_CONTROL_OK;
     }
@@ -775,24 +834,15 @@ CraneControlStatus CraneControl_Init(const CraneControlConfig *config)
         s_state.status = CRANE_CONTROL_SERVO_ERROR;
         return s_state.status;
     }
-    /* Zeroing the drives only *names* the pose they are standing in, so a drive
-       that does not answer is not a reason to refuse to start - the datum is the
-       assumed park pose either way, and the controller has a whole run in which to
-       notice a bus that is really dead. An earlier version returned here on a
-       missing reply, which left initialized at zero and made every key press beep
-       NOT_READY: startup had begun addressing the second drive, and any reason for
-       that one to stay quiet (Modbus still enabled, both drives still on the
-       factory address 01H) became fatal where it never used to be. */
-    /* Deliberately not stored in s_state.status: mission.c treats a non-OK status
-       as "the arm stopped following the plan" and ends the run, so a startup fault
-       left there would fail the first run before the arm had moved. A bus that is
-       really dead still shows up as consecutive faults once the run starts. */
-    (void)establish_axis_zero();
-    /* Replaces the assumed datum with a measured one. A failure here is not fatal
-       either, for the same reason: the assumed park pose is still a datum, just one
-       that trusts the operator. */
-    if (CraneControl_Home(CRANE_HOME_PUSH_MS) != CRANE_CONTROL_OK) {
-        (void)establish_axis_zero();
+    /* Never enter the ready state unless both drive counters were cleared and
+       read back near zero. Otherwise an absolute task target would be interpreted
+       in the drive's stale coordinate frame and could send an axis across its
+       whole travel. */
+    s_state.status = s_config.home_on_startup != 0U
+                         ? CraneControl_Home(CRANE_HOME_PUSH_MS)
+                         : establish_axis_zero();
+    if (s_state.status != CRANE_CONTROL_OK) {
+        return s_state.status;
     }
     /* The push left both axes resting where they stopped and clear_axis_positions()
        named that zero, so the position both drives hold is already the one this
@@ -940,6 +990,12 @@ CraneControlStatus CraneControl_Home(uint32_t push_ms)
     if (status != CRANE_CONTROL_OK) {
         return status;
     }
+    /* A zero-step relative command exits communication torque mode without
+       moving the mechanism. This mode transition is required before 0xF8. */
+    status = set_axis_position_mode_zero(PD42S1_COMMAND_RELATIVE_POSITION);
+    if (status != CRANE_CONTROL_OK) {
+        return status;
+    }
     /* The push moved the mechanism, so the drives' counters no longer read what they
        did when startup cleared them. Clearing them here is what puts the stop at
        position zero in the drives' own frame, and it has to happen after the push
@@ -953,14 +1009,11 @@ CraneControlStatus CraneControl_Home(uint32_t push_ms)
     if (status != CRANE_CONTROL_OK) {
         return status;
     }
-    /* Puts both drives into the mode the run uses, without moving them. The drive's
-       working mode follows whichever motion command it was last given, so after the
-       push both are in torque mode. Absolute position zero leaves it: the counters
-       were just cleared, so zero is the position each drive is already at, and an
-       absolute target already reached produces no motion. Doing it here rather than
-       letting the control loop's first target do it means the mode change happens
-       while the arm is known to be at its stops, not part-way into a plan. */
-    status = hold_axis_positions();
+    /* Puts both drives into the absolute mode the run uses, without moving them.
+       The counters were just cleared, so zero is the position each drive is already
+       at. Doing it here rather than letting the first task target switch modes keeps
+       every task command in one absolute coordinate frame. */
+    status = set_axis_position_mode_zero(PD42S1_COMMAND_ABSOLUTE_POSITION);
     if (status != CRANE_CONTROL_OK) {
         return status;
     }

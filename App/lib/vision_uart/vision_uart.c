@@ -15,6 +15,9 @@
 #define VISION_UART_TX_TIMEOUT_MS        20U
 #define VISION_UART_RX_CHUNK_SIZE        VISION_PROTOCOL_MAX_FRAME_LENGTH
 #define VISION_UART_RX_RING_SIZE         512U
+/* Debug mode: keep the vision module streaming after a stable frame is accepted.
+   Set to 1U for contest operation when ACK_ACCEPTED should stop its sender. */
+#define VISION_UART_SEND_STOP_ACK         0U
 
 static uint8_t VisionUart_RxChunk[VISION_UART_RX_CHUNK_SIZE];
 static uint8_t VisionUart_RxRing[VISION_UART_RX_RING_SIZE];
@@ -267,7 +270,10 @@ void VisionUart_App(void *argument)
                        after a failed handover. */
                     if (DecisionTask_Submit(&request) != 0U) {
                         output.state = VISION_UART_STATE_SUBMITTED;
-                        send_ack(packet.seq, VISION_PROTOCOL_ACK_ACCEPTED);
+                        if (VISION_UART_SEND_STOP_ACK != 0U) {
+                            send_ack(packet.seq,
+                                     VISION_PROTOCOL_ACK_ACCEPTED);
+                        }
                     } else {
                         output.state = VISION_UART_STATE_ERROR;
                         send_ack(packet.seq, VISION_PROTOCOL_ACK_INVALID);
