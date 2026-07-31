@@ -35,16 +35,16 @@ extern "C" {
 /** MG996R 允许的软件机械角范围及中心位置。 */
 #define SERVO_MIN_ANGLE_DEG                 0.0f
 #define SERVO_MAX_ANGLE_DEG                 180.0f
-#define SERVO_CENTER_ANGLE_DEG              90.0f
+#define SERVO_CENTER_ANGLE_DEG              40.0f
 
 /**
  * Servo_Init() 写入的上电角，两个通道各自取值。
  *
  * 升降轴初始化和任务抬起使用同一个受限高度，避免上电先冲到机械上限。
- * 角度增大时机构下降，因此 110° 比原来的 90° 抬起位置更低。
- * 末端 Yaw 仍初始化在中位 90°。
+ * 抬起位为 40°，下降吸放位为 0°。
  */
-#define SERVO_LIFT_RAISED_ANGLE_DEG         110.0f
+#define SERVO_LIFT_RAISED_ANGLE_DEG         40.0f
+#define SERVO_LIFT_LOWERED_ANGLE_DEG        0.0f
 #define SERVO_LIFT_INIT_ANGLE_DEG           SERVO_LIFT_RAISED_ANGLE_DEG
 #define SERVO_END_YAW_INIT_ANGLE_DEG        SERVO_CENTER_ANGLE_DEG
 
