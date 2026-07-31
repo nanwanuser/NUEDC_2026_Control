@@ -155,7 +155,7 @@ void CraneControl_CustomizeConfig(CraneControlConfig *config)
     /* Retained for configuration compatibility; endpoint lift control does not
        use the scale or direction to calculate an intermediate servo angle. */
     config->lift_direction_sign = -1;
-    config->end_yaw_direction_sign = -1;
+    config->end_yaw_direction_sign = 1;
     config->yaw_speed_rpm = CRANE_YAW_SPEED_RPM;
     config->reach_speed_rpm = CRANE_REACH_SPEED_RPM;
     config->yaw_acceleration = CRANE_YAW_ACCELERATION;
