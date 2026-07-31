@@ -516,6 +516,39 @@ static void test_pick_uses_vision_center(void)
     check(found != 0U, "vision-center piece was missing from the plan");
 }
 
+static void test_place_centers_include_safety_clearance(void)
+{
+    const float quadrant_center_radius_mm =
+        sqrtf(25.0f * 25.0f + 17.5f * 17.5f);
+    const float expected_radius_mm =
+        quadrant_center_radius_mm + DECISION_ASSEMBLY_CLEARANCE_MM;
+    DecisionVisionFrame frame;
+    DecisionConfig config;
+    DecisionPlan plan;
+    uint8_t move_index;
+
+    build_frame(&frame, 0.0f);
+    Decision_GetDefaultConfig(&config);
+    check(Decision_Solve(&frame, &config, &plan) == DECISION_RESULT_OK,
+          "clearance frame did not solve");
+
+    for (move_index = 0U; move_index < plan.move_count; ++move_index) {
+        const float dx = plan.moves[move_index].place.x_mm -
+                         config.target_center.x_mm;
+        const float dy = plan.moves[move_index].place.y_mm -
+                         config.target_center.y_mm;
+        const float radius_mm = sqrtf(dx * dx + dy * dy);
+        char message[128];
+
+        (void)snprintf(message, sizeof(message),
+                       "move %u clearance radius %.3f, expected %.3f",
+                       (unsigned)move_index,
+                       (double)radius_mm,
+                       (double)expected_radius_mm);
+        check(fabsf(radius_mm - expected_radius_mm) < 0.01f, message);
+    }
+}
+
 int main(void)
 {
     test_exact_pieces();
@@ -529,6 +562,7 @@ int main(void)
     test_halves_are_fixed_by_the_shared_frame();
     test_trajectory_stops_above_pick_and_place();
     test_pick_uses_vision_center();
+    test_place_centers_include_safety_clearance();
 
     if (failures != 0) {
         printf("%d decision test(s) failed\n", failures);

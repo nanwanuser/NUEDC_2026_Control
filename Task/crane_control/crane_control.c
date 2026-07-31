@@ -26,7 +26,7 @@
 #define CRANE_LIMIT_TOLERANCE_DEG         0.05f
 /* An axis is accepted when the drive's signed 0x2B position error is strictly
    inside this band. */
-#define CRANE_POSITION_ERROR_THRESHOLD_UNITS 100U
+#define CRANE_POSITION_ERROR_THRESHOLD_UNITS 200U
 /* Consecutive bus faults tolerated before the run is abandoned.
  *
  * A single lost reply used to end the run: mission.c stops the moment
