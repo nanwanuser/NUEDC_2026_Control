@@ -27,11 +27,15 @@ BASE_POLYGONS = (
     ((0.0, 60.0), (0.0, 0.0), (50.0, 30.0)),
 )
 ANGLES_DEG = (-18.0, 71.0, 143.0, -96.0)
+# Every piece centre has to land in the pick half of the sheet, x < 148.5: the
+# assembly is built in the other half, and the solver refuses a frame whose pieces
+# are measured there rather than trying to assemble on top of them. These are
+# chosen to scatter the pieces while keeping each centre well inside that half.
 TRANSLATIONS_MM = (
     (30.0, 20.0),
-    (155.0, 30.0),
+    (95.0, 55.0),
     (45.0, 105.0),
-    (165.0, 115.0),
+    (100.0, 150.0),
 )
 
 

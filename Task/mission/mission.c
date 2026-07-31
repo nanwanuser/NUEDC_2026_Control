@@ -47,12 +47,11 @@
  *
  * The centre is chosen for reach margin, since that is the binding constraint:
  * every corner of the largest allowed 12x9 cm rectangle has to stay inside the
- * crane's 70..230 mm band in *either* orientation, because which way round the
- * solver lays the result out is not known here. At (210.5, 85.5) the worst corner
- * over both orientations is r = 222.9 mm and the nearest is r = 77.4 mm, so about
- * 7 mm of margin at each end - the most any point in this half leaves. It also
- * keeps that rectangle clear of the divider and of all four sheet edges. */
-#define MISSION_TARGET_CENTER_X_MM     210.5f
+ * crane's current 70..270 mm band in either orientation. At (220.5, 85.5) the
+ * farthest such corner is r = 227.8 mm and the nearest is r = 80.2 mm. The
+ * rightmost nominal edge is x = 280.5 mm, leaving 16.5 mm on the sheet for the
+ * decision layer's small assembly-clearance offset. */
+#define MISSION_TARGET_CENTER_X_MM     220.5f
 #define MISSION_TARGET_CENTER_Y_MM     85.5f
 
 

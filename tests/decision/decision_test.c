@@ -38,8 +38,7 @@ static void set_piece(DecisionPiece *piece,
         piece->vertices[index].x_mm = xy[2U * index];
         piece->vertices[index].y_mm = xy[2U * index + 1U];
     }
-    /* The centre only has to be inside the piece; the solver recomputes the
-       grasp point itself. */
+    /* The centre is the pick point supplied by vision. */
     for (index = 0U; index < vertex_count; ++index) {
         piece->center.x_mm += piece->vertices[index].x_mm;
         piece->center.y_mm += piece->vertices[index].y_mm;
@@ -181,14 +180,28 @@ static void test_rejects_impossible_layout(void)
     DecisionPlan plan;
     DecisionResult result;
 
-    build_frame(&frame, 0.0f);
-    /* Replace one quadrant with a small triangle, so no arrangement fills a
-       rectangle in the allowed size range. */
+    /* Four 20x75 strips. Their areas sum to 6000 mm², exactly the area of a
+       valid 100x60 target, so the set can only be refused on geometry and not
+       for being obviously too small. Four such strips tile just three
+       rectangles - 80x75, 40x150 and 20x300 - and every one of them is outside
+       the task's 9x5 to 12x9 cm range, while every partial arrangement leaves
+       far too much of its bounding rectangle empty. Every edge is at least the
+       2 cm the task requires, so the set is legal input. */
     {
-        const float triangle[6] = {0.0f, 0.0f, 25.0f, 0.0f, 0.0f, 25.0f};
+        const float strip[8] = {0.0f, 0.0f, 20.0f, 0.0f, 20.0f, 75.0f,
+                                0.0f, 75.0f};
+        uint8_t i;
 
-        set_piece(&frame.pieces[2], 3U, 3U, triangle);
-        scatter(&frame.pieces[2], 78.0f, 60.0f, 260.0f);
+        (void)memset(&frame, 0, sizeof(frame));
+        frame.seq = 1U;
+        frame.piece_count = 4U;
+        for (i = 0U; i < 4U; ++i) {
+            set_piece(&frame.pieces[i], (uint8_t)(i + 1U), 4U, strip);
+        }
+        scatter(&frame.pieces[0], 11.0f, 30.0f, 20.0f);
+        scatter(&frame.pieces[1], -47.0f, 95.0f, 60.0f);
+        scatter(&frame.pieces[2], 68.0f, 40.0f, 120.0f);
+        scatter(&frame.pieces[3], -23.0f, 110.0f, 165.0f);
     }
     Decision_GetDefaultConfig(&config);
     result = Decision_Solve(&frame, &config, &plan);
@@ -285,27 +298,35 @@ static void test_small_rectangle(void)
    other edge and the angles have to agree too. That is the case worth pinning
    down, since it is far more sensitive to cutting error.
  *
- * A 100x60 mm rectangle cut by a diagonal and then one of the halves cut again,
- * giving two triangles and two quadrilaterals, with each piece keeping at least
- * one edge on the outer boundary as the task guarantees. */
+ * A 100x60 mm rectangle crossed by two slanted cuts, one from (20,0) to (80,60)
+ * and one from (0,20) to (100,40), which meet at (50,30). The four regions really
+ * do tile the rectangle, and each keeps at least one edge on the outer boundary as
+ * the task guarantees.
+ *
+ * These pieces also meet at T-junctions, which is the harder half of the case.
+ * Neither cut ends where the other does, so along each cut a long edge of one
+ * piece faces two shorter edges of two others - and the vision end reports that
+ * long edge as one edge, because its two halves are collinear and look like a
+ * single side of the contour. A matcher that only joins edges of equal length
+ * cannot represent this layout at all and refuses a set that plainly tiles. */
 static void build_slanted_frame(DecisionVisionFrame *frame, float error_mm)
 {
     const float e = error_mm;
-    /* Lower-left triangle and upper-right triangle share the diagonal. */
-    const float t0[6] = {0.0f, 0.0f, 100.0f, 0.0f, 0.0f, 60.0f - e};
-    const float q1[8] = {100.0f, 0.0f, 100.0f, 30.0f + e,
-                         50.0f + e, 30.0f, 50.0f, 0.0f};
-    const float q2[8] = {0.0f, 60.0f, 60.0f - e, 60.0f,
-                         60.0f, 35.0f + e, 0.0f, 35.0f};
-    const float t3[6] = {100.0f, 60.0f, 40.0f + e, 60.0f, 100.0f, 25.0f - e};
+    /* Where the two cuts cross. */
+    const float ix = 50.0f;
+    const float iy = 30.0f;
+    const float a[8] = {0.0f, 0.0f, 20.0f + e, 0.0f, ix, iy, 0.0f, 20.0f - e};
+    const float b[8] = {20.0f, 0.0f, 100.0f, 0.0f, 100.0f, 40.0f + e, ix + e, iy};
+    const float c[8] = {0.0f, 20.0f, ix, iy - e, 80.0f - e, 60.0f, 0.0f, 60.0f};
+    const float d[8] = {ix, iy, 100.0f, 40.0f, 100.0f, 60.0f, 80.0f + e, 60.0f};
 
     (void)memset(frame, 0, sizeof(*frame));
     frame->seq = 3U;
     frame->piece_count = 4U;
-    set_piece(&frame->pieces[0], 1U, 3U, t0);
-    set_piece(&frame->pieces[1], 2U, 4U, q1);
-    set_piece(&frame->pieces[2], 3U, 4U, q2);
-    set_piece(&frame->pieces[3], 4U, 3U, t3);
+    set_piece(&frame->pieces[0], 1U, 4U, a);
+    set_piece(&frame->pieces[1], 2U, 4U, b);
+    set_piece(&frame->pieces[2], 3U, 4U, c);
+    set_piece(&frame->pieces[3], 4U, 4U, d);
 
     scatter(&frame->pieces[0], 13.0f, 22.0f, 28.0f);
     scatter(&frame->pieces[1], -52.0f, 40.0f, 88.0f);
@@ -313,33 +334,30 @@ static void build_slanted_frame(DecisionVisionFrame *frame, float error_mm)
     scatter(&frame->pieces[3], -29.0f, 50.0f, 150.0f);
 }
 
-/* Documents what the solver does with slanted, non-interlocking pieces. These
-   deliberately do not tile a rectangle exactly, so a refusal is the honest
-   answer; what matters is that it is reported as NO_SOLUTION and not as a
-   crash, a search-limit stall, or a bogus plan. */
+/* The task's own pieces must be solved, not refused, at the cutting accuracy a
+   hand-cut set actually has. A refusal here is what the device reports as a
+   diagnostic beep instead of assembling anything. */
 static void test_slanted_pieces_are_handled(void)
 {
-    DecisionVisionFrame frame;
-    DecisionConfig config;
-    DecisionPlan plan;
-    DecisionResult result;
-    char message[128];
+    const float errors[3] = {0.0f, 1.5f, 3.0f};
+    uint8_t index;
 
-    build_slanted_frame(&frame, 0.0f);
-    Decision_GetDefaultConfig(&config);
-    result = Decision_Solve(&frame, &config, &plan);
+    for (index = 0U; index < 3U; ++index) {
+        DecisionVisionFrame frame;
+        DecisionConfig config;
+        DecisionPlan plan;
+        DecisionResult result;
+        char message[128];
 
-    (void)snprintf(message, sizeof(message),
-                   "slanted pieces: expected OK or NO_SOLUTION, got %s",
-                   result_name(result));
-    check(result == DECISION_RESULT_OK ||
-          result == DECISION_RESULT_NO_SOLUTION, message);
+        build_slanted_frame(&frame, errors[index]);
+        Decision_GetDefaultConfig(&config);
+        result = Decision_Solve(&frame, &config, &plan);
 
-    /* Whatever it decides, it must decide within the node budget: a run that
-       reports SEARCH_LIMIT on four pieces would mean the budget is the real
-       constraint rather than the geometry. */
-    check(result != DECISION_RESULT_SEARCH_LIMIT,
-          "slanted pieces: node budget exhausted on only four pieces");
+        (void)snprintf(message, sizeof(message),
+                       "slanted pieces at %.1f mm: expected OK, got %s",
+                       (double)errors[index], result_name(result));
+        check(result == DECISION_RESULT_OK, message);
+    }
 }
 
 /* Shifts every piece along x and returns what the solver made of the frame,
@@ -465,6 +483,72 @@ static void test_trajectory_stops_above_pick_and_place(void)
           "transfer descended before the place axes were confirmed");
 }
 
+static void test_pick_uses_vision_center(void)
+{
+    DecisionVisionFrame frame;
+    DecisionConfig config;
+    DecisionPlan plan;
+    DecisionPoint expected_center;
+    uint8_t piece_id;
+    uint8_t move_index;
+    uint8_t found = 0U;
+
+    build_frame(&frame, 0.0f);
+    frame.pieces[0].center.x_mm += 3.0f;
+    frame.pieces[0].center.y_mm += 2.0f;
+    expected_center = frame.pieces[0].center;
+    piece_id = frame.pieces[0].id;
+    Decision_GetDefaultConfig(&config);
+
+    check(Decision_Solve(&frame, &config, &plan) == DECISION_RESULT_OK,
+          "vision-center frame did not solve");
+    for (move_index = 0U; move_index < plan.move_count; ++move_index) {
+        if (plan.moves[move_index].piece_id == piece_id) {
+            found = 1U;
+            check(fabsf(plan.moves[move_index].pick.x_mm -
+                        expected_center.x_mm) < 0.001f &&
+                      fabsf(plan.moves[move_index].pick.y_mm -
+                            expected_center.y_mm) < 0.001f,
+                  "pick did not use the center supplied by vision");
+            break;
+        }
+    }
+    check(found != 0U, "vision-center piece was missing from the plan");
+}
+
+static void test_place_centers_include_safety_clearance(void)
+{
+    const float quadrant_center_radius_mm =
+        sqrtf(25.0f * 25.0f + 17.5f * 17.5f);
+    const float expected_radius_mm =
+        quadrant_center_radius_mm + DECISION_ASSEMBLY_CLEARANCE_MM;
+    DecisionVisionFrame frame;
+    DecisionConfig config;
+    DecisionPlan plan;
+    uint8_t move_index;
+
+    build_frame(&frame, 0.0f);
+    Decision_GetDefaultConfig(&config);
+    check(Decision_Solve(&frame, &config, &plan) == DECISION_RESULT_OK,
+          "clearance frame did not solve");
+
+    for (move_index = 0U; move_index < plan.move_count; ++move_index) {
+        const float dx = plan.moves[move_index].place.x_mm -
+                         config.target_center.x_mm;
+        const float dy = plan.moves[move_index].place.y_mm -
+                         config.target_center.y_mm;
+        const float radius_mm = sqrtf(dx * dx + dy * dy);
+        char message[128];
+
+        (void)snprintf(message, sizeof(message),
+                       "move %u clearance radius %.3f, expected %.3f",
+                       (unsigned)move_index,
+                       (double)radius_mm,
+                       (double)expected_radius_mm);
+        check(fabsf(radius_mm - expected_radius_mm) < 0.01f, message);
+    }
+}
+
 int main(void)
 {
     test_exact_pieces();
@@ -477,6 +561,8 @@ int main(void)
     test_slanted_pieces_are_handled();
     test_halves_are_fixed_by_the_shared_frame();
     test_trajectory_stops_above_pick_and_place();
+    test_pick_uses_vision_center();
+    test_place_centers_include_safety_clearance();
 
     if (failures != 0) {
         printf("%d decision test(s) failed\n", failures);

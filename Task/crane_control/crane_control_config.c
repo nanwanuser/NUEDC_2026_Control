@@ -27,7 +27,7 @@
 #define CRANE_ORIGIN_X_MM                 (CRANE_A4_LONG_EDGE_MM / 2.0f)
 #define CRANE_ORIGIN_Y_MM                 (-50.0f)
 /* World height assigned to the logical raised state. The lift controller maps
-   that state directly to its fixed 90 deg position. */
+   that state directly to SERVO_LIFT_INIT_ANGLE_DEG. */
 #define CRANE_ORIGIN_Z_MM                 40.0f
 /* World heading the boom holds at local yaw zero, i.e. +Y: from the column that
    points across the sheet's y = 0 edge towards the far edge. */
@@ -40,7 +40,7 @@
 #define CRANE_STARTUP_BOOM_YAW_DEG        90.0f
 #define CRANE_REACH_ZERO_RADIUS_MM        70.0f
 #define CRANE_REACH_TRAVEL_MM             200.0f
-#define CRANE_REACH_MM_PER_MOTOR_REV      90.3062f
+#define CRANE_REACH_MM_PER_MOTOR_REV      92.4555f
 #define CRANE_GEAR_TRAVEL_MM_PER_REV      94.2478f
 #define CRANE_MIN_BOOM_YAW_DEG            (-90.0f)
 #define CRANE_MAX_BOOM_YAW_DEG            90.0f
@@ -54,12 +54,12 @@
    use this value to calculate either commanded angle. */
 #define CRANE_LIFT_ZERO_ANGLE_DEG         SERVO_LIFT_INIT_ANGLE_DEG
 #define CRANE_END_YAW_CENTER_DEG           90.0f
-#define CRANE_YAW_SPEED_RPM               40U
-#define CRANE_REACH_SPEED_RPM             40U
+#define CRANE_YAW_SPEED_RPM               10U
+#define CRANE_REACH_SPEED_RPM             50U
 /* Each waypoint is one fixed absolute-position command, so the drive owns the
    acceleration and braking profile. Lower values produce gentler ramps. */
-#define CRANE_YAW_ACCELERATION            10U
-#define CRANE_REACH_ACCELERATION          5U
+#define CRANE_YAW_ACCELERATION            100U
+#define CRANE_REACH_ACCELERATION          100U
 /* Startup datum. Neither axis has a limit switch, and the drive's own switchless
    homing is not used: it retreats to a configured origin position after finding the
    stop, and its outcome only arrives as a state code. Instead both axes are simply
@@ -155,7 +155,7 @@ void CraneControl_CustomizeConfig(CraneControlConfig *config)
     /* Retained for configuration compatibility; endpoint lift control does not
        use the scale or direction to calculate an intermediate servo angle. */
     config->lift_direction_sign = -1;
-    config->end_yaw_direction_sign = -1;
+    config->end_yaw_direction_sign = 1;
     config->yaw_speed_rpm = CRANE_YAW_SPEED_RPM;
     config->reach_speed_rpm = CRANE_REACH_SPEED_RPM;
     config->yaw_acceleration = CRANE_YAW_ACCELERATION;

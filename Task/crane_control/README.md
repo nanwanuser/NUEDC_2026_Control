@@ -82,8 +82,9 @@ void CraneControl_CustomizeConfig(CraneControlConfig *config)
   与机构实际表现一致。
 - 伸缩零位半径为 `70 mm`，向外有效行程为 `200 mm`，半径范围为
   `70..270 mm`。
-- 升降采用两个固定位置：舵机 `90 deg` 时电磁铁处于抬起位置，舵机
-  `180 deg` 时电磁铁处于吸取位置。规划器保留 `-45..0 mm` 的局部 Z 状态，
+- 升降采用两个可调固定位置：`SERVO_LIFT_INIT_ANGLE_DEG` 是电磁铁的初始化和
+  抬起位置，`SERVO_LIFT_LOWERED_ANGLE_DEG` 是吸取和放置位置。规划器保留
+  `-45..0 mm` 的局部 Z 状态，
   但不再将毫米值换算成舵机角度。
 - M1/Z30 齿轮实测每转行程为 `94.2478 mm`；该参数用于伸缩轴，不用于升降
   舵机的端点控制。
@@ -91,10 +92,9 @@ void CraneControl_CustomizeConfig(CraneControlConfig *config)
 - 方向符号依次为 Yaw `-1`、伸缩 `+1`、升降 `-1`、末端 Yaw `-1`。
 - 两台 PD42S1 均开启命令应答，控制器等待并校验每条应答。
 
-升降控制只输出两个固定角度：抬起 `40 deg`、下降 `0 deg`。调整 `min_z_mm` 不会改变
-实际下降角度；两个角度均立即写入 PWM，不经过软件滤波，舵机按自身最大速度移动。
-若吸取高度仍需改变，应调整机械结构。实机首次运行应脱离负载，确认两个位置均没有
-机械干涉。
+升降控制只输出上述两个角度。Z 轴逻辑 `0 deg` 为最高、`180 deg` 为最低；调整
+`min_z_mm` 不会改变实际下降角度。两个角度均立即写入 PWM，不经过软件滤波，舵机按
+自身速度移动。实机首次运行应脱离负载，逐步增大下降角度并确认没有机械干涉。
 
 末端 Yaw 不使用安装零偏。规划器世界 Yaw 减去吊臂世界方向后，得到末端
 相对吊臂的 `-90..90 deg` 角度。反方向最大位置 `-90 deg` 作为机械零角；
@@ -172,11 +172,11 @@ void CraneControl_CustomizeConfig(CraneControlConfig *config)
 
 ## 启动升降回零
 
-`Servo_Init()` 按 `SERVO_LIFT_INIT_ANGLE_DEG = 0 deg` 上电。`CraneControl_Init()` 在
-移动任何驱动器之前立即把升降 PWM 写到 `max_z_mm` 对应的固定抬起位置 `90 deg`。
+`Servo_Init()` 按 `SERVO_LIFT_INIT_ANGLE_DEG` 上电。`CraneControl_Init()` 在移动任何
+驱动器之前再次把升降 PWM 写到 `max_z_mm` 对应的相同抬起角度。
 
-这一步用于在吊臂和伸缩轴顶零前确认升降舵机处于 `90 deg` 抬起位置，避免电磁铁在
-低位随吊臂运动。
+这一步用于在吊臂和伸缩轴顶零前确认升降舵机处于配置的抬起位置，避免电磁铁在低位
+随吊臂运动。
 
 停放高度同时是 `CraneControl_GetCurrentPose()` 的初值，因此首条轨迹从行程上端
 出发，不会在开头多出一次无用的升降行程。

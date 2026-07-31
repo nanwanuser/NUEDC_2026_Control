@@ -490,9 +490,9 @@ static int test_lift_is_controlled_explicitly(void)
     CraneControl_Update();
     CraneControl_GetState(&state);
     if (captured_lift_immediate_count != 2U ||
-        fabsf(captured_lift_angle_deg - SERVO_CENTER_ANGLE_DEG) > 0.01f ||
+        fabsf(captured_lift_angle_deg - SERVO_LIFT_INIT_ANGLE_DEG) > 0.01f ||
         state.lift_position != CRANE_LIFT_RAISED) {
-        fputs("explicit raise command did not drive the lift to 90 degrees\n",
+        fputs("explicit raise command did not use the configured init angle\n",
               stderr);
         return 1;
     }

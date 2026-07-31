@@ -26,41 +26,31 @@ if (Servo_Init() != HAL_OK) {
 }
 ```
 
-初始化后两个通道各自输出 `SERVO_LIFT_INIT_ANGLE_DEG` 和
-`SERVO_END_YAW_INIT_ANGLE_DEG`：驱动层先将升降置于 `0°`，随后
-`Task/crane_control` 在步进电机归零前立即命令到固定抬起位置 `90°`；末端 Yaw
-初始化为中心角 `90°`。
-
-设置目标后，以固定 5~10 ms 周期调用 `Servo_Update()`，驱动会依次执行一阶低通、
-卡尔曼滤波、0.1°量化和 CCR 更新。
-
-升降轴的两位置动作使用 `Servo_SetAngleImmediate()`，该接口立即更新 PWM 目标，
-绕过软件滤波，让舵机以自身最大速度移动。末端 Yaw 继续使用 `Servo_SetAngle()`。
+初始化后两个通道立即输出 `SERVO_LIFT_INIT_ANGLE_DEG` 和
+`SERVO_END_YAW_INIT_ANGLE_DEG`。所有角度命令都直接量化并写入 CCR，不经过低通或
+卡尔曼滤波，舵机以自身速度移动。`Servo_Update()` 仅为兼容现有任务保留，不执行
+任何处理。
 
 ```c
 Servo_SetAngle(SERVO_LIFT, 120.0f);
 Servo_SetAngle(SERVO_END_YAW, 70.0f);
-
-for (;;) {
-    Servo_Update();
-    osDelay(10);
-}
 ```
 
 `Servo_Stop()` 只冻结当前软件角并继续输出 PWM 保持位置，不会切断舵机电源。
 
-## 安装校准
+## Z 轴高度调试
 
-方向和机械零位配置集中在 `Servo.h`：
+Z 轴约定 `0°` 为最高、`180°` 为最低。高度只由下面两个宏决定：
 
 ```c
-#define SERVO_LIFT_REVERSED          0U
-#define SERVO_END_YAW_REVERSED       0U
-#define SERVO_LIFT_ZERO_TRIM_DEG     (0.0f)
-#define SERVO_END_YAW_ZERO_TRIM_DEG  (0.0f)
+#define SERVO_LIFT_INIT_ANGLE_DEG     40.0f
+#define SERVO_LIFT_LOWERED_ANGLE_DEG  180.0f
 ```
 
-装配后只调整这些宏，不要在上层控制逻辑中重复反向或叠加零位补偿。
+`SERVO_LIFT_INIT_ANGLE_DEG` 同时控制上电位置和任务抬起位置；
+`SERVO_LIFT_LOWERED_ANGLE_DEG` 控制吸取和放置时的下降位置。实机调试时逐步增加下降
+角度，确认连杆未到机械限位后再继续增加。根据当前舵机安装方向，Z 轴的 `0°`、
+`90°`、`180°` 分别直接输出 `2500 us`、`1500 us`、`500 us`。
 
 ## 注意事项
 
