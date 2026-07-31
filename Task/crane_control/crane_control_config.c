@@ -10,8 +10,9 @@
 #define CRANE_DEFAULT_LIFT_MM_PER_DEG     (CRANE_DEFAULT_GEAR_TRAVEL_MM_REV / 360.0f)
 #define CRANE_DEFAULT_Z_LIMIT_MM          (CRANE_DEFAULT_GEAR_TRAVEL_MM_REV / 4.0f)
 #define CRANE_DEFAULT_STEPPER_SPEED_RPM   60U
-#define CRANE_DEFAULT_ACCELERATION        50U
+#define CRANE_DEFAULT_ACCELERATION        10U
 #define CRANE_DEFAULT_MIN_CHANGE_UNITS    16U
+#define CRANE_DEFAULT_ARRIVAL_TIMEOUT_MS  12000U
 /* World frame, and the one every layer shares: it is the vision end's A4 frame.
  * The sheet lies landscape, its top-left corner is the origin, +X runs right
  * along the long edge (0..297) and +Y runs down the short edge (0..210). Y
@@ -25,8 +26,8 @@
 #define CRANE_A4_SHORT_EDGE_MM            210.0f
 #define CRANE_ORIGIN_X_MM                 (CRANE_A4_LONG_EDGE_MM / 2.0f)
 #define CRANE_ORIGIN_Y_MM                 (-50.0f)
-/* World height of local z = 0, which is the top of the lift stroke: measured
-   magnet-centre height with the lift servo at its 0 deg end. */
+/* World height assigned to the logical raised state. The lift controller maps
+   that state directly to its fixed 90 deg position. */
 #define CRANE_ORIGIN_Z_MM                 40.0f
 /* World heading the boom holds at local yaw zero, i.e. +Y: from the column that
    points across the sheet's y = 0 edge towards the far edge. */
@@ -42,40 +43,20 @@
 #define CRANE_GEAR_TRAVEL_MM_PER_REV      94.2478f
 #define CRANE_MIN_BOOM_YAW_DEG            (-90.0f)
 #define CRANE_MAX_BOOM_YAW_DEG            90.0f
-/* The lift is a two-position servo: CraneLiftTrigger snaps every reference to
-   one of these two heights, so the low one *is* the pick depth and nothing
-   between them is ever commanded.
- *
- * The datum is now measured rather than derived: at the servo's 0 deg end the
- * magnet centre sits CRANE_ORIGIN_Z_MM = 40 mm above the sheet, and that end is
- * the top of the stroke - the linkage descends as the angle *rises*, which is what
- * lift_direction_sign = -1 says. So local z = 0 is the top, every commanded height
- * is negative, and picking at 1 mm of world height is 1 - 40 = -39 mm of local z.
- *
- * At lift_mm_per_degree = 94.2478/360 = 0.2618 mm/deg those 39 mm cost 149.0 deg,
- * putting the low stop at 0 + 149.0 = 149.0 deg. That is inside the servo's 180 deg
- * but no longer with much to spare: only 31 deg, about 8 mm, is left beyond the
- * pick. If the magnet turns out to need more depth than that, the linkage has to be
- * lowered mechanically rather than asked for here - the stroke is already using
- * five sixths of the servo's travel. */
-#define CRANE_MIN_LOCAL_Z_MM              (-39.0f)
-/* Travel height, and the top of the stroke. Only has to clear the pieces and the
-   assembled rectangle on the way past, which is a couple of millimetres of card,
-   so the measured 40 mm of world height here is far more than needed - it is set by
-   where the linkage rests at the servo's 0 deg end, not chosen. */
+/* The lift is a two-position servo. These Z values describe the planner's raised
+   and lowered states only; the control layer commands the corresponding physical
+   positions directly: 110 deg when raised and 180 deg when lowered. */
+#define CRANE_MIN_LOCAL_Z_MM              (-45.0f)
+/* Logical travel height; the lift controller maps it to the fixed raised angle. */
 #define CRANE_MAX_LOCAL_Z_MM              0.0f
-/* Which servo angle holds z = 0. Now the stroke's upper end, so it is also the
-   angle Servo_Init() parks the lift at (SERVO_LIFT_INIT_ANGLE_DEG) - the two have
-   to agree or startup jumps the lift once before park_lift() even runs.
- *
- * No longer a free knob for how deep the magnet goes: it cannot be lowered, being
- * already at the servo's 0 deg limit, and raising it would drop the top of the
- * stroke as well as the bottom. Adjust CRANE_MIN_LOCAL_Z_MM for pick depth, within
- * the 31 deg the stroke leaves unused. */
+/* Retained for configuration compatibility; fixed-position lift control does not
+   use this value to calculate either commanded angle. */
 #define CRANE_LIFT_ZERO_ANGLE_DEG         SERVO_LIFT_INIT_ANGLE_DEG
 #define CRANE_END_YAW_CENTER_DEG           90.0f
 #define CRANE_YAW_SPEED_RPM               40U
-#define CRANE_REACH_SPEED_RPM             20U
+#define CRANE_REACH_SPEED_RPM             40U
+/* Each waypoint is one fixed absolute-position command, so the drive owns the
+   acceleration and braking profile. Lower values produce gentler ramps. */
 #define CRANE_YAW_ACCELERATION            10U
 #define CRANE_REACH_ACCELERATION          5U
 /* Startup datum. Neither axis has a limit switch, and the drive's own switchless
@@ -138,6 +119,7 @@ void CraneControl_LoadDefaultConfig(CraneControlConfig *config)
     config->home_on_startup = 0U;
     config->home_torque_current_ma = CRANE_DEFAULT_HOME_CURRENT_MA;
     config->home_push_ms = CRANE_DEFAULT_HOME_PUSH_MS;
+    config->arrival_timeout_ms = CRANE_DEFAULT_ARRIVAL_TIMEOUT_MS;
 }
 
 /**
@@ -169,8 +151,8 @@ void CraneControl_CustomizeConfig(CraneControlConfig *config)
     config->end_yaw_zero_offset_deg = 0.0f;
     config->yaw_direction_sign = -1;
     config->reach_direction_sign = 1;
-    /* The linkage descends as the servo angle rises, so height and angle run
-       opposite ways; lift_angle_for_z() needs the sign to say so. */
+    /* Retained for configuration compatibility; endpoint lift control does not
+       use the scale or direction to calculate an intermediate servo angle. */
     config->lift_direction_sign = -1;
     config->end_yaw_direction_sign = -1;
     config->yaw_speed_rpm = CRANE_YAW_SPEED_RPM;
@@ -183,6 +165,7 @@ void CraneControl_CustomizeConfig(CraneControlConfig *config)
     config->home_on_startup = CRANE_HOME_ON_STARTUP;
     config->home_torque_current_ma = CRANE_HOME_CURRENT_MA;
     config->home_push_ms = CRANE_HOME_PUSH_MS;
+    config->arrival_timeout_ms = CRANE_DEFAULT_ARRIVAL_TIMEOUT_MS;
 }
 
 /**

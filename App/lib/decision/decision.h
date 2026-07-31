@@ -144,8 +144,9 @@ DecisionResult Decision_SolveGeneral(const DecisionVisionFrame *frame,
                                      const DecisionConfig *config,
                                      DecisionPlan *plan);
 
-/* Builds current -> lift -> above pick -> pick and pick -> above pick ->
-   above place -> place, so no leg of the motion travels near the board. */
+/* Builds raised travel paths ending at pick_above and place_above. The decision
+   task performs the two vertical servo strokes explicitly after both stepper
+   axes report physical arrival. */
 uint8_t Decision_BuildTrajectoryRequest(const DecisionMove *move,
                                         const TrajectoryPose *current,
                                         const TrajectoryLimits *limits,

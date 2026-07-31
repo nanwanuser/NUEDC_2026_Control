@@ -21,12 +21,12 @@ void RoutePlanning_ApplyYawBias(TrajectoryRequest *trajectory)
                                     trajectory->transfer.point_count,
                                     &bias_deg);
 
-    /* Decision_BuildTrajectoryRequest() ends the approach at pick-above and
-       pick. Keep the actual start pose (and an optional empty-tool lift) as-is,
-       then join the biased pick poses continuously to the transfer path. */
-    approach_bias_start = trajectory->approach.point_count > 2U
-                              ? (uint8_t)(trajectory->approach.point_count - 2U)
-                              : 1U;
+    /* Decision_BuildTrajectoryRequest() ends the approach at pick-above. Keep
+       the actual start and optional vertical clearance pose as-is, then join the
+       biased pick-above pose continuously to the transfer path. */
+    approach_bias_start = trajectory->approach.point_count > 1U
+                              ? (uint8_t)(trajectory->approach.point_count - 1U)
+                              : 0U;
     for (index = approach_bias_start;
          index < trajectory->approach.point_count;
          ++index) {

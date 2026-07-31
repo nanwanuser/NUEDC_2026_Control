@@ -48,15 +48,15 @@ place.yaw_deg = 从当前碎片姿态到目标姿态所需的旋转量
 `Task/crane_control/README.md` 的「末端 Yaw 基准偏置」。由于只有抓放两点的
 差值决定拼图姿态，该偏置不改变拼图结果。
 
-目前轨迹模块只有一个中间点。决策模块将它设置为吸取点正上方：
+步进电机轨迹只负责高位移动，分别停在吸取点和放置点正上方：
 
 ```text
-transit.x/y = pick.x/y
-transit.z   = config.transit_z_mm
+approach.end = pick_above
+transfer.start = pick_above
+transfer.end = place_above
 ```
 
-这会优先完成抬升，再转移到放置点。若后续要求“放置点上方再垂直下降”，需要
-把轨迹模块扩展为两个安全路径点。
+升降舵机不参与连续轨迹插值，由决策状态机在两个步进轴确认到位后单独动作。
 
 ## 调用示例
 
@@ -81,11 +81,12 @@ DecisionTask_Submit(&request);
 `TrajectoryRequest` 并依次提交给 `RoutePlanning`：
 
 ```text
-current -> pick -> 等待吸附 -> transit -> place -> 等待释放 -> 下一片
+current -> pick_above -> 确认双轴到位 -> 下降吸附 -> 上升
+        -> place_above -> 确认双轴到位 -> 下降释放 -> 上升 -> 下一片
 ```
 
 第一片的 `current` 使用 `request.execution.current_pose`，后续碎片自动使用上一片
-的 `place`。速度、加速度和等待时间位于 `request.execution`。执行状态通过
+的 `place_above`。速度、加速度和舵机行程等待时间位于 `request.execution`。执行状态通过
 `DecisionTask_Output.execution_state` 查看；轨迹生成错误通过
 `DecisionTask_Output.trajectory_result` 查看。
 

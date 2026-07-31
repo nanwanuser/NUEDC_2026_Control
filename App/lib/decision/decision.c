@@ -979,16 +979,13 @@ uint8_t Decision_BuildTrajectoryRequest(const DecisionMove *move,
     if (append_distinct_waypoint(&request->approach, current) == 0U ||
         append_distinct_waypoint(&request->approach, &current_above) == 0U ||
         append_distinct_waypoint(&request->approach, &move->pick_above) == 0U ||
-        append_distinct_waypoint(&request->approach, &move->pick) == 0U ||
         request->approach.point_count < 2U) {
         return 0U;
     }
 
     Trajectory_PathReset(&request->transfer);
-    if (append_distinct_waypoint(&request->transfer, &move->pick) == 0U ||
-        append_distinct_waypoint(&request->transfer, &move->pick_above) == 0U ||
+    if (append_distinct_waypoint(&request->transfer, &move->pick_above) == 0U ||
         append_distinct_waypoint(&request->transfer, &move->place_above) == 0U ||
-        append_distinct_waypoint(&request->transfer, &move->place) == 0U ||
         request->transfer.point_count < 2U) {
         return 0U;
     }

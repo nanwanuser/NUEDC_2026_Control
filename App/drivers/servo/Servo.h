@@ -40,16 +40,12 @@ extern "C" {
 /**
  * Servo_Init() 写入的上电角，两个通道各自取值。
  *
- * 升降取行程上端 0°，而不是机械中位：实测连杆在 0° 时电磁铁中心在纸面以上
- * 20 mm，是抬起到最高的姿态，角度越大反而越往下探。若这里给中位 90°，
- * 电磁铁会低到纸面以下，上电瞬间就把连杆顶在纸上，随后吊臂还要摆动数秒。
- * 末端 Yaw 没有这个约束，仍取中位。
- *
- * 升降的这个值必须与 Task/crane_control 的 lift_zero_angle_deg 及
- * max_z_mm 换算出的上端角一致，否则上电会先跳一次。角度增大对应下降这一点，
- * 由那边的 lift_direction_sign = -1 表达。
+ * 升降轴初始化和任务抬起使用同一个受限高度，避免上电先冲到机械上限。
+ * 角度增大时机构下降，因此 110° 比原来的 90° 抬起位置更低。
+ * 末端 Yaw 仍初始化在中位 90°。
  */
-#define SERVO_LIFT_INIT_ANGLE_DEG           SERVO_MIN_ANGLE_DEG
+#define SERVO_LIFT_RAISED_ANGLE_DEG         110.0f
+#define SERVO_LIFT_INIT_ANGLE_DEG           SERVO_LIFT_RAISED_ANGLE_DEG
 #define SERVO_END_YAW_INIT_ANGLE_DEG        SERVO_CENTER_ANGLE_DEG
 
 /**
@@ -140,9 +136,16 @@ HAL_StatusTypeDef Servo_Init(void);
  * @brief 设置一个舵机的最终目标角度。
  * @param servo_id 舵机编号。
  * @param angle_deg 目标机械角；超出 0~180° 时自动限幅，并量化到 0.1°。
- * @note 本函数只更新目标，必须周期调用 Servo_Update() 才会逐步输出。
+ * @note 本函数只更新目标，必须周期调用 Servo_Update() 才会逐步输出；升降轴
+ *       的全速动作使用 Servo_SetAngleImmediate()。
  */
 HAL_StatusTypeDef Servo_SetAngle(Servo_Id_t servo_id, float angle_deg);
+
+/**
+ * @brief 立即输出目标角度，不经过软件滤波。
+ * @note PWM 在本次调用中直接更新，舵机随后以自身最大速度运动；供升降轴使用。
+ */
+HAL_StatusTypeDef Servo_SetAngleImmediate(Servo_Id_t servo_id, float angle_deg);
 
 /** 同时设置吊臂升降和末端 Yaw 舵机的最终目标机械角。 */
 HAL_StatusTypeDef Servo_SetAngles(float lift_angle_deg,

@@ -38,6 +38,7 @@ C5 地址 功能码 [变长数据] CHECKSUM 5C
 | 触发回零 | `0x92` | 1 字节 | 2 字节 |
 | 强制中断并退出回零 | `0x93` | 0 字节 | 1 字节 |
 | 读取回零状态 | `0x96` | 0 字节 | 2 字节 |
+| 读取电机到位标志 | `0x30` | 0 字节 | 2 字节 |
 
 `0x90`～`0x93` 的应答会把参数回显在结果字节之后，长度与控制类命令不同，因此用
 `pd42s1_receive_home_reply()` 接收，而不是 `pd42s1_receive_response()`。`0x96`
@@ -60,7 +61,12 @@ pd42s1_set_home_parameters(motor_id, mode, direction,
 pd42s1_trigger_home(motor_id, trigger);
 pd42s1_abort_home(motor_id);
 pd42s1_read_home_state(motor_id, &state, timeout_ms);
+pd42s1_read_arrival_flag(motor_id, &arrival, timeout_ms);
 ```
+
+`0xF2` 的单字节成功应答只表示驱动器接受了命令，不表示电机已经到位。任务执行到
+轨迹终点后必须调用 `pd42s1_read_arrival_flag()`；其第二个应答数据字节为 `1` 才表示
+位置环已经到位。
 
 ## 堵转与状态清除
 

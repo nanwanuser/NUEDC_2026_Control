@@ -21,6 +21,8 @@ typedef struct {
     TrajectoryResult result;
     float elapsed_s;
     TrajectoryReference reference;
+    uint8_t waypoint_index;
+    uint8_t waypoint_count;
     uint8_t active;
 } RoutePlanningOutput;
 
@@ -33,6 +35,9 @@ extern volatile RoutePlanningOutput RoutePlanning_Output;
 void RoutePlanning_Init(void);
 uint8_t RoutePlanning_Submit(const RoutePlanningRequest *request);
 void RoutePlanning_ResumeTransfer(void);
+void RoutePlanning_ConfirmWaypoint(uint32_t plan_id,
+                                   TrajectoryPhase phase,
+                                   uint8_t waypoint_index);
 void RoutePlanning_Cancel(void);
 void RoutePlanning_GetOutput(RoutePlanningOutput *output);
 void Route_planning_App(void *argument);

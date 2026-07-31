@@ -1,5 +1,4 @@
 #include "crane_control.h"
-#include "crane_lift_trigger.h"
 
 #include "Servo.h"
 #include "pd42s1.h"
@@ -45,13 +44,6 @@
    of its travel. Arriving early costs only the remainder spent resting against the
    stop, which at CRANE_HOME_CURRENT_MA is a light load rather than a fight. */
 #define CRANE_HOME_PUSH_MS                3000U
-/* Startup budget for walking the lift servo up to its park height. The filter
-   needs a few ticks to converge and there is no feedback to wait on, so this is
-   simply long enough for the servo to have arrived before the boom starts
-   moving. The stroke covered here is the whole of it rather than half, so the
-   budget is longer than the one that only had to reach z = 0. */
-#define CRANE_LIFT_PARK_TIMEOUT_MS        900U
-
 typedef struct {
     int64_t position_units;
     uint8_t valid;
@@ -64,11 +56,12 @@ typedef struct {
 static CraneControlConfig s_config;
 static CraneControlState s_state;
 static RoutePlanningOutput s_pending_output;
+static RoutePlanningOutput s_active_output;
 static CraneMotorPosition s_yaw_position;
 static CraneMotorPosition s_reach_position;
-static CraneLiftTriggerState s_lift_trigger;
-static uint8_t s_lift_command_pending;
 static uint8_t s_consecutive_bus_faults;
+static uint8_t s_axis_target_active;
+static uint32_t s_arrival_wait_start_tick;
 /* Where each drive's zero sits in crane coordinates. Without homing the only
    available datum is "wherever the mechanism was standing at reset", so this holds
    the park pose and the mechanism has to actually be parked. Homing replaces it
@@ -77,6 +70,8 @@ static uint8_t s_consecutive_bus_faults;
 static float s_yaw_datum_deg;
 static float s_reach_datum_mm;
 static volatile uint8_t s_output_pending;
+static volatile uint8_t s_grip_command_pending;
+static volatile uint8_t s_pending_grip;
 static volatile TrajectoryPose s_last_pose;
 static uint8_t s_config_loaded;
 static float normalize_angle(float angle_deg)
@@ -147,7 +142,8 @@ static uint8_t config_ranges_are_valid(const CraneControlConfig *config)
                      config->home_torque_current_ma > 0U &&
                      config->home_torque_current_ma <=
                          PD42S1_MAX_TORQUE_CURRENT_MA &&
-                     config->home_push_ms > 0U);
+                     config->home_push_ms > 0U &&
+                     config->arrival_timeout_ms > 0U);
 }
 static uint8_t config_is_valid(const CraneControlConfig *config)
 {
@@ -169,9 +165,13 @@ static uint8_t planner_output_is_valid(const RoutePlanningOutput *output)
 {
     return (uint8_t)(output != NULL &&
                      output->result == TRAJECTORY_RESULT_OK &&
-                     (output->state == TRAJECTORY_STATE_RUNNING ||
-                      output->state == TRAJECTORY_STATE_COMPLETE) &&
-                     pose_is_finite(&output->reference.pose));
+                      (output->state == TRAJECTORY_STATE_RUNNING ||
+                       output->state == TRAJECTORY_STATE_COMPLETE) &&
+                      (output->state == TRAJECTORY_STATE_COMPLETE ||
+                       (output->waypoint_count >= 2U &&
+                        output->waypoint_index > 0U &&
+                        output->waypoint_index < output->waypoint_count)) &&
+                      pose_is_finite(&output->reference.pose));
 }
 
 /* The accessors at the end of this file are usable before startup, so callers
@@ -221,6 +221,7 @@ static void publish_state(CraneControlStatus status,
         s_state.plan_id = output->plan_id;
         s_state.phase = output->phase;
         s_state.planner_state = output->state;
+        s_state.waypoint_index = output->waypoint_index;
     }
     if (target != NULL) {
         s_state.target = *target;
@@ -228,16 +229,28 @@ static void publish_state(CraneControlStatus status,
     taskEXIT_CRITICAL();
 }
 
-/* Servo angle that holds a given local height. Shared by the startup park move
-   and the running lift command so the two cannot drift apart. */
-static float lift_angle_for_z(float z_mm)
+static void publish_arrival_flags(uint8_t yaw_at_target,
+                                  uint8_t reach_at_target)
 {
-    return s_config.lift_zero_angle_deg +
-        (float)s_config.lift_direction_sign * z_mm / s_config.lift_mm_per_degree;
+    taskENTER_CRITICAL();
+    s_state.yaw_at_target = yaw_at_target;
+    s_state.reach_at_target = reach_at_target;
+    s_state.axes_at_target =
+        (uint8_t)(yaw_at_target != 0U && reach_at_target != 0U);
+    taskEXIT_CRITICAL();
 }
 
-/* Maps one planner pose onto the boom, reach, and wrist axes. The lift is left
-   alone here because it is driven by the sign of the z change, not by z. */
+/* The lift uses two fixed positions. Planner Z still selects whether the retained
+   target is raised or lowered, but it is not converted into an angle. */
+static float lift_angle_for_z(float z_mm)
+{
+    return z_mm < s_config.max_z_mm
+               ? SERVO_MAX_ANGLE_DEG
+               : SERVO_LIFT_RAISED_ANGLE_DEG;
+}
+
+/* Maps one planner pose onto the boom, reach, and wrist axes. Lift and grip are
+   explicit decision-state commands and are deliberately left unchanged. */
 static void transform_pose(const TrajectoryPose *pose,
                            float reference_boom_yaw_deg,
                            CraneActuatorTarget *target)
@@ -264,11 +277,6 @@ static void transform_reference(const TrajectoryReference *reference,
                                 CraneActuatorTarget *target)
 {
     transform_pose(&reference->pose, s_state.target.boom_yaw_deg, target);
-    s_lift_command_pending = CraneLiftTrigger_Update(
-        &s_lift_trigger, reference->pose.z_mm, s_config.min_z_mm,
-        s_config.max_z_mm, &target->z_mm);
-    target->lift_servo_angle_deg = lift_angle_for_z(target->z_mm);
-    target->grip = reference->grip != 0U ? 1U : 0U;
 }
 
 /* Boom, reach, and wrist travel, which depend only on the planner pose. The
@@ -391,44 +399,6 @@ static CraneControlStatus send_motor_command(uint8_t motor_id,
                                            : CRANE_CONTROL_DRIVE_REJECTED;
 }
 
-/* The speed that covers this tick's step in one tick, which is what turns a
-   sequence of point-to-point moves into continuous motion.
- *
- * The planner already paces the reference: each tick's target is one step along a
- * profiled path. Sending every step at a fixed RPM makes the drive sprint to it
- * and then sit still until the next one arrives, and it is that dash-and-dwell
- * that both shakes the mechanism and makes the two axes arrive at different
- * times, so the tool cuts corners instead of following the path. Asking for
- * exactly the speed the step needs means the drive is still moving when the next
- * target lands, and because both axes are scaled to the same tick they sweep
- * their steps together - which is how a plotter gets a straight line out of two
- * independent motors.
- *
- * Clamped to the configured speed, so this only ever slows an axis down: the
- * limit stays whatever the mechanism was tuned for. */
-static uint16_t feed_rate_rpm(const CraneMotorPosition *next,
-                              const CraneMotorPosition *previous,
-                              uint16_t max_speed_rpm)
-{
-    const int64_t delta_units = next->position_units -
-                                (previous->valid != 0U
-                                     ? previous->position_units
-                                     : 0);
-    const uint64_t magnitude_units = delta_units < 0
-                                         ? (uint64_t)(-delta_units)
-                                         : (uint64_t)delta_units;
-    const float revolutions = (float)magnitude_units /
-                              (float)PD42S1_POSITION_UNITS_PER_REVOLUTION;
-    const float rpm = revolutions * (60000.0f / (float)CRANE_TICK_PERIOD_MS);
-
-    if (previous->valid == 0U || rpm >= (float)max_speed_rpm) {
-        return max_speed_rpm;
-    }
-    /* Never round down to a standstill: a step small enough to ask for 0 RPM
-       would leave the axis parked and the error would carry to the next tick. */
-    return rpm < 1.0f ? 1U : (uint16_t)rpm;
-}
-
 static CraneControlStatus command_axis(uint8_t motor_id,
                                        uint16_t speed_rpm,
                                        uint8_t acceleration,
@@ -451,7 +421,7 @@ static CraneControlStatus command_axis(uint8_t motor_id,
         return CRANE_CONTROL_OK;
     }
     status = send_motor_command(motor_id,
-                                feed_rate_rpm(&next, previous, speed_rpm),
+                                speed_rpm,
                                 acceleration, &absolute);
     if (status == CRANE_CONTROL_OK) {
         *previous = next;
@@ -613,13 +583,55 @@ static CraneControlStatus establish_axis_zero(void)
     return worst;
 }
 
+static CraneControlStatus update_arrival_state(void)
+{
+    pd42s1_arrival_t yaw_arrival;
+    pd42s1_arrival_t reach_arrival;
+    max485_status_t status;
+
+    if (s_axis_target_active == 0U) {
+        return CRANE_CONTROL_OK;
+    }
+    if (s_config.expect_stepper_response == 0U) {
+        publish_arrival_flags(1U, 1U);
+        s_axis_target_active = 0U;
+        return CRANE_CONTROL_OK;
+    }
+
+    status = pd42s1_read_arrival_flag(PD42S1_MOTOR_1_ID, &yaw_arrival,
+                                      PD42S1_UART_TIMEOUT_MS);
+    if (status != MAX485_STATUS_OK) {
+        publish_arrival_flags(0U, 0U);
+        return CRANE_CONTROL_TRANSPORT_ERROR;
+    }
+    status = pd42s1_read_arrival_flag(PD42S1_MOTOR_2_ID, &reach_arrival,
+                                      PD42S1_UART_TIMEOUT_MS);
+    if (status != MAX485_STATUS_OK) {
+        publish_arrival_flags((uint8_t)(yaw_arrival ==
+                                        PD42S1_ARRIVAL_REACHED), 0U);
+        return CRANE_CONTROL_TRANSPORT_ERROR;
+    }
+    publish_arrival_flags((uint8_t)(yaw_arrival == PD42S1_ARRIVAL_REACHED),
+                          (uint8_t)(reach_arrival == PD42S1_ARRIVAL_REACHED));
+    if (yaw_arrival == PD42S1_ARRIVAL_REACHED &&
+        reach_arrival == PD42S1_ARRIVAL_REACHED) {
+        s_axis_target_active = 0U;
+        return CRANE_CONTROL_OK;
+    }
+    if ((uint32_t)(HAL_GetTick() - s_arrival_wait_start_tick) >=
+        s_config.arrival_timeout_ms) {
+        s_axis_target_active = 0U;
+        return CRANE_CONTROL_ARRIVAL_TIMEOUT;
+    }
+    return CRANE_CONTROL_OK;
+}
+
 static CraneControlStatus apply_output(const RoutePlanningOutput *output)
 {
-    CraneActuatorTarget target;
+    CraneActuatorTarget target = s_state.target;
     CraneControlStatus status;
     float yaw_revolutions;
     float reach_revolutions;
-    uint8_t force = output->state == TRAJECTORY_STATE_COMPLETE ? 1U : 0U;
 
     transform_reference(&output->reference, &target);
     if (target_is_in_workspace(&target) == 0U) {
@@ -634,22 +646,25 @@ static CraneControlStatus apply_output(const RoutePlanningOutput *output)
     reach_revolutions = (float)s_config.reach_direction_sign *
         (target.radius_mm - s_reach_datum_mm) /
         s_config.reach_mm_per_motor_revolution;
-    status = command_axis(PD42S1_MOTOR_1_ID, s_config.yaw_speed_rpm,
-                          s_config.yaw_acceleration, yaw_revolutions,
-                          force, &s_yaw_position);
-    if (status == CRANE_CONTROL_OK) {
-        status = command_axis(PD42S1_MOTOR_2_ID, s_config.reach_speed_rpm,
-                              s_config.reach_acceleration, reach_revolutions,
-                              force, &s_reach_position);
-    }
-    if (status == CRANE_CONTROL_OK && s_lift_command_pending != 0U) {
-        if (Servo_SetAngle(SERVO_LIFT,
-                           target.lift_servo_angle_deg) != HAL_OK) {
-            status = CRANE_CONTROL_SERVO_ERROR;
-        } else {
-            CraneLiftTrigger_Acknowledge(&s_lift_trigger);
-            s_lift_command_pending = 0U;
+    if (output->state == TRAJECTORY_STATE_RUNNING) {
+        publish_arrival_flags(0U, 0U);
+        status = command_axis(PD42S1_MOTOR_1_ID, s_config.yaw_speed_rpm,
+                              s_config.yaw_acceleration, yaw_revolutions,
+                              1U, &s_yaw_position);
+        if (status == CRANE_CONTROL_OK) {
+            status = command_axis(PD42S1_MOTOR_2_ID,
+                                  s_config.reach_speed_rpm,
+                                  s_config.reach_acceleration,
+                                  reach_revolutions, 1U, &s_reach_position);
         }
+        if (status == CRANE_CONTROL_OK) {
+            s_active_output = *output;
+            s_arrival_wait_start_tick = HAL_GetTick();
+            s_axis_target_active = 1U;
+        }
+    } else {
+        status = CRANE_CONTROL_OK;
+        s_axis_target_active = 0U;
     }
     if (status == CRANE_CONTROL_OK &&
         Servo_SetAngle(SERVO_END_YAW,
@@ -657,7 +672,6 @@ static CraneControlStatus apply_output(const RoutePlanningOutput *output)
         status = CRANE_CONTROL_SERVO_ERROR;
     }
     if (status == CRANE_CONTROL_OK) {
-        CraneControl_SetMagnet(target.grip);
         publish_pose(&output->reference.pose);
     }
     publish_state(status, output, &target);
@@ -676,35 +690,34 @@ static uint8_t take_pending_output(RoutePlanningOutput *output)
     taskEXIT_CRITICAL();
     return pending;
 }
-/* Puts the lift at the top of its stroke, which is where the mechanism is parked
-   and the height the lift trigger's first upward event would snap to anyway, so
-   the first plan does not begin with a stroke.
- *
- * With SERVO_LIFT_INIT_ANGLE_DEG matching the angle max_z_mm maps to, Servo_Init()
- * already leaves the servo there and this only confirms it. It is kept because the
- * agreement between those two is a calibration coincidence, not something the code
- * enforces: the servo driver knows servo travel, this module knows where the sheet
- * is, and only this one converts. Should they ever diverge, the correction happens
- * here, before any drive is touched, rather than seconds later - the servo moves
- * only when Servo_Update() runs, and the first of the task's own ticks is a whole
- * startup push away, which the magnet would spend below the sheet with the boom
- * swinging over it. That is why the ticks are run here. */
+
+static CraneControlStatus apply_pending_grip_command(void)
+{
+    uint8_t grip_pending;
+    uint8_t grip;
+
+    taskENTER_CRITICAL();
+    grip_pending = s_grip_command_pending;
+    grip = s_pending_grip;
+    s_grip_command_pending = 0U;
+    taskEXIT_CRITICAL();
+
+    if (grip_pending != 0U) {
+        CraneControl_SetMagnet(grip);
+        taskENTER_CRITICAL();
+        s_state.target.grip = grip;
+        taskEXIT_CRITICAL();
+    }
+    return CRANE_CONTROL_OK;
+}
+/* Confirms the same limited-height raised angle used by Servo_Init() before either
+   stepper starts homing. The immediate API writes the PWM target here, so no
+   software filter settling loop is needed. */
 static CraneControlStatus park_lift(void)
 {
-    const uint32_t start_tick = HAL_GetTick();
-
-    if (Servo_SetAngle(SERVO_LIFT,
-                       lift_angle_for_z(s_config.max_z_mm)) != HAL_OK) {
+    if (Servo_SetAngleImmediate(
+            SERVO_LIFT, lift_angle_for_z(s_config.max_z_mm)) != HAL_OK) {
         return CRANE_CONTROL_SERVO_ERROR;
-    }
-    while (Servo_IsAtTarget(SERVO_LIFT) == 0U) {
-        if (HAL_GetTick() - start_tick >= CRANE_LIFT_PARK_TIMEOUT_MS) {
-            /* Not an error: the command stands and the task's own ticks will
-               finish the move. Startup just stops waiting on it. */
-            break;
-        }
-        HAL_Delay(CRANE_TICK_PERIOD_MS);
-        Servo_Update();
     }
     return CRANE_CONTROL_OK;
 }
@@ -726,19 +739,19 @@ CraneControlStatus CraneControl_Init(const CraneControlConfig *config)
     (void)memset(&s_state, 0, sizeof(s_state));
     (void)memset(&s_yaw_position, 0, sizeof(s_yaw_position));
     (void)memset(&s_reach_position, 0, sizeof(s_reach_position));
-    /* Seeded at the park height so the trigger agrees with where park_lift() puts
-       the servo; otherwise its first sample would call the lift low and the first
-       upward leg of a plan would look like a height it was already at. */
-    CraneLiftTrigger_Init(&s_lift_trigger, s_config.max_z_mm);
-    s_lift_command_pending = 0U;
+    s_grip_command_pending = 0U;
+    s_pending_grip = 0U;
     s_output_pending = 0U;
     s_consecutive_bus_faults = 0U;
+    s_axis_target_active = 0U;
+    s_arrival_wait_start_tick = 0U;
     s_state.status = CRANE_CONTROL_OK;
     s_state.target.boom_yaw_deg = s_config.startup_boom_yaw_deg;
     s_state.target.z_mm = s_config.max_z_mm;
     s_state.target.lift_servo_angle_deg = lift_angle_for_z(s_config.max_z_mm);
     s_state.target.end_yaw_servo_angle_deg =
         s_config.end_yaw_center_angle_deg;
+    s_state.lift_position = CRANE_LIFT_RAISED;
     /* Startup parks the boom at startup_boom_yaw_deg with the reach at its zero
        radius and the lift at the top of its stroke, so that is the pose a first
        plan has to start from. */
@@ -1006,20 +1019,42 @@ static uint8_t status_is_transient(CraneControlStatus status)
 void CraneControl_Update(void)
 {
     RoutePlanningOutput output;
+    CraneControlStatus actuator_status;
+    uint8_t applied_output = 0U;
 
     if (take_pending_output(&output) != 0U) {
         const CraneControlStatus status = apply_output(&output);
 
+        applied_output = 1U;
         if (status == CRANE_CONTROL_OK) {
             s_consecutive_bus_faults = 0U;
         } else if (status_is_transient(status) != 0U &&
                    s_consecutive_bus_faults < CRANE_MAX_CONSECUTIVE_BUS_FAULTS) {
-            /* Hold the run open and let the next tick restate the target.
-               apply_output has already recorded the fault in s_state, so the
-               status has to be put back to OK or mission.c would stop anyway. */
             ++s_consecutive_bus_faults;
+            taskENTER_CRITICAL();
+            s_pending_output = output;
+            s_output_pending = 1U;
+            taskEXIT_CRITICAL();
             publish_state(CRANE_CONTROL_OK, NULL, NULL);
         }
+    }
+    if (applied_output == 0U && s_axis_target_active != 0U) {
+        const CraneControlStatus status = update_arrival_state();
+
+        if (status == CRANE_CONTROL_OK) {
+            s_consecutive_bus_faults = 0U;
+            publish_state(CRANE_CONTROL_OK, &s_active_output, NULL);
+        } else if (status_is_transient(status) != 0U &&
+                   s_consecutive_bus_faults < CRANE_MAX_CONSECUTIVE_BUS_FAULTS) {
+            ++s_consecutive_bus_faults;
+            publish_state(CRANE_CONTROL_OK, NULL, NULL);
+        } else {
+            publish_state(status, NULL, NULL);
+        }
+    }
+    actuator_status = apply_pending_grip_command();
+    if (actuator_status != CRANE_CONTROL_OK) {
+        publish_state(actuator_status, NULL, NULL);
     }
     Servo_Update();
 }
@@ -1032,6 +1067,52 @@ void CraneControl_GetState(CraneControlState *state)
     taskENTER_CRITICAL();
     *state = s_state;
     taskEXIT_CRITICAL();
+}
+
+CraneControlStatus CraneControl_CommandLift(CraneLiftPosition position)
+{
+    float z_mm;
+    float angle_deg;
+
+    if (position != CRANE_LIFT_RAISED && position != CRANE_LIFT_LOWERED) {
+        return CRANE_CONTROL_INVALID_ARGUMENT;
+    }
+    if (s_state.initialized == 0U) {
+        return CRANE_CONTROL_NOT_INITIALIZED;
+    }
+
+    z_mm = position == CRANE_LIFT_LOWERED
+               ? s_config.min_z_mm
+               : s_config.max_z_mm;
+    angle_deg = lift_angle_for_z(z_mm);
+
+    /* The lift is an endpoint actuator with no feedback. Write its PWM in the
+       caller's tick so a completed stepper move cannot be followed by a lost or
+       delayed mailbox command. Resetting the servo state also prevents the
+       periodic filter update from restoring the previous angle. */
+    taskENTER_CRITICAL();
+    if (Servo_SetAngleImmediate(SERVO_LIFT, angle_deg) != HAL_OK) {
+        taskEXIT_CRITICAL();
+        return CRANE_CONTROL_SERVO_ERROR;
+    }
+    s_state.target.z_mm = z_mm;
+    s_state.target.lift_servo_angle_deg = angle_deg;
+    s_state.lift_position = position;
+    s_last_pose.z_mm = z_mm;
+    taskEXIT_CRITICAL();
+    return CRANE_CONTROL_OK;
+}
+
+CraneControlStatus CraneControl_CommandGrip(uint8_t enabled)
+{
+    if (s_state.initialized == 0U) {
+        return CRANE_CONTROL_NOT_INITIALIZED;
+    }
+    taskENTER_CRITICAL();
+    s_pending_grip = enabled != 0U ? 1U : 0U;
+    s_grip_command_pending = 1U;
+    taskEXIT_CRITICAL();
+    return CRANE_CONTROL_OK;
 }
 
 void CraneControl_GetConfig(CraneControlConfig *config)

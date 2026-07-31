@@ -16,6 +16,10 @@ volatile uint8_t RoutePlanning_RequestPending;
 volatile uint8_t RoutePlanning_ResumeTransferRequested;
 volatile RoutePlanningOutput RoutePlanning_Output;
 static volatile uint8_t RoutePlanning_CancelRequested;
+static volatile uint8_t RoutePlanning_WaypointConfirmed;
+static volatile uint32_t RoutePlanning_ConfirmedPlanId;
+static volatile TrajectoryPhase RoutePlanning_ConfirmedPhase;
+static volatile uint8_t RoutePlanning_ConfirmedWaypointIndex;
 
 static void copy_input(RoutePlanningRequest *request)
 {
@@ -46,6 +50,24 @@ static uint8_t take_cancel_request(void)
     RoutePlanning_CancelRequested = 0U;
     taskEXIT_CRITICAL();
     return requested;
+}
+
+static uint8_t take_waypoint_confirmation(uint32_t *plan_id,
+                                          TrajectoryPhase *phase,
+                                          uint8_t *waypoint_index)
+{
+    uint8_t confirmed;
+
+    taskENTER_CRITICAL();
+    confirmed = RoutePlanning_WaypointConfirmed;
+    if (confirmed != 0U) {
+        *plan_id = RoutePlanning_ConfirmedPlanId;
+        *phase = RoutePlanning_ConfirmedPhase;
+        *waypoint_index = RoutePlanning_ConfirmedWaypointIndex;
+        RoutePlanning_WaypointConfirmed = 0U;
+    }
+    taskEXIT_CRITICAL();
+    return confirmed;
 }
 
 static void publish_output(const RoutePlanningOutput *output)
@@ -116,14 +138,30 @@ static uint8_t prepare_path(TrajectoryRequest *trajectory)
                      widen_path(&trajectory->transfer) != 0U);
 }
 
-static float ticks_to_seconds(uint32_t ticks)
+static const TrajectoryPath *phase_path(const TrajectoryRequest *trajectory,
+                                        TrajectoryPhase phase)
 {
-    const uint32_t tick_frequency = osKernelGetTickFreq();
+    return phase == TRAJECTORY_PHASE_APPROACH
+               ? &trajectory->approach
+               : &trajectory->transfer;
+}
 
-    if (tick_frequency == 0U) {
-        return 0.0f;
-    }
-    return (float)ticks / (float)tick_frequency;
+static void publish_waypoint(RoutePlanningOutput *output,
+                             const TrajectoryRequest *trajectory,
+                             TrajectoryPhase phase,
+                             uint8_t waypoint_index)
+{
+    const TrajectoryPath *path = phase_path(trajectory, phase);
+
+    output->phase = phase;
+    output->state = TRAJECTORY_STATE_RUNNING;
+    output->elapsed_s = 0.0f;
+    output->reference.pose = path->points[waypoint_index];
+    output->reference.grip = phase == TRAJECTORY_PHASE_TRANSFER ? 1U : 0U;
+    output->waypoint_index = waypoint_index;
+    output->waypoint_count = path->point_count;
+    output->active = 1U;
+    publish_output(output);
 }
 
 void RoutePlanning_Init(void)
@@ -135,6 +173,7 @@ void RoutePlanning_Init(void)
     RoutePlanning_RequestPending = 0U;
     RoutePlanning_ResumeTransferRequested = 0U;
     RoutePlanning_CancelRequested = 0U;
+    RoutePlanning_WaypointConfirmed = 0U;
 }
 
 uint8_t RoutePlanning_Submit(const RoutePlanningRequest *request)
@@ -148,6 +187,7 @@ uint8_t RoutePlanning_Submit(const RoutePlanningRequest *request)
     RoutePlanning_RequestPending = 1U;
     RoutePlanning_ResumeTransferRequested = 0U;
     RoutePlanning_CancelRequested = 0U;
+    RoutePlanning_WaypointConfirmed = 0U;
     taskEXIT_CRITICAL();
 
     return 1U;
@@ -160,11 +200,24 @@ void RoutePlanning_ResumeTransfer(void)
     taskEXIT_CRITICAL();
 }
 
+void RoutePlanning_ConfirmWaypoint(uint32_t plan_id,
+                                   TrajectoryPhase phase,
+                                   uint8_t waypoint_index)
+{
+    taskENTER_CRITICAL();
+    RoutePlanning_ConfirmedPlanId = plan_id;
+    RoutePlanning_ConfirmedPhase = phase;
+    RoutePlanning_ConfirmedWaypointIndex = waypoint_index;
+    RoutePlanning_WaypointConfirmed = 1U;
+    taskEXIT_CRITICAL();
+}
+
 void RoutePlanning_Cancel(void)
 {
     taskENTER_CRITICAL();
     RoutePlanning_RequestPending = 0U;
     RoutePlanning_ResumeTransferRequested = 0U;
+    RoutePlanning_WaypointConfirmed = 0U;
     RoutePlanning_CancelRequested = 1U;
     taskEXIT_CRITICAL();
 }
@@ -186,11 +239,10 @@ void Route_planning_App(void *argument)
     RoutePlanningOutput output;
     TrajectoryPlan plan;
     TrajectoryPhase phase = TRAJECTORY_PHASE_APPROACH;
-    TrajectoryState state;
     TrajectoryResult result;
     uint32_t active_plan_id = 0U;
-    uint32_t phase_start_tick = 0U;
     uint8_t plan_active = 0U;
+    uint8_t waypoint_index = 0U;
 
     (void)argument;
     (void)memset(&output, 0, sizeof(output));
@@ -213,20 +265,16 @@ void Route_planning_App(void *argument)
                          : TRAJECTORY_RESULT_INVALID_ARGUMENT;
             active_plan_id = request.plan_id;
             phase = TRAJECTORY_PHASE_APPROACH;
-            phase_start_tick = osKernelGetTickCount();
             (void)take_resume_request();
+            RoutePlanning_WaypointConfirmed = 0U;
 
             if (result == TRAJECTORY_RESULT_OK) {
                 plan_active = 1U;
                 output.plan_id = active_plan_id;
-                output.phase = phase;
-                output.state = TRAJECTORY_STATE_RUNNING;
                 output.result = result;
-                output.elapsed_s = 0.0f;
-                output.reference.pose = request.trajectory.approach.points[0];
-                output.reference.grip = 0U;
-                output.active = 1U;
-                publish_output(&output);
+                waypoint_index = 1U;
+                publish_waypoint(&output, &request.trajectory, phase,
+                                 waypoint_index);
             } else {
                 plan_active = 0U;
                 output.plan_id = active_plan_id;
@@ -235,35 +283,51 @@ void Route_planning_App(void *argument)
                 output.result = result;
                 output.elapsed_s = 0.0f;
                 (void)memset(&output.reference, 0, sizeof(output.reference));
+                output.waypoint_index = 0U;
+                output.waypoint_count = 0U;
                 output.active = 0U;
                 publish_output(&output);
             }
         }
 
         if (plan_active != 0U) {
-            const uint32_t now = osKernelGetTickCount();
-            const float elapsed_s = ticks_to_seconds(now - phase_start_tick);
+            uint32_t confirmed_plan_id;
+            TrajectoryPhase confirmed_phase;
+            uint8_t confirmed_waypoint_index;
 
-            state = Trajectory_Evaluate(&plan, phase, elapsed_s, &output.reference);
-            output.plan_id = active_plan_id;
-            output.phase = phase;
-            output.state = state;
-            output.result = TRAJECTORY_RESULT_OK;
-            output.elapsed_s = elapsed_s;
-            output.active = 1U;
+            if (take_waypoint_confirmation(&confirmed_plan_id,
+                                           &confirmed_phase,
+                                           &confirmed_waypoint_index) != 0U &&
+                output.state == TRAJECTORY_STATE_RUNNING &&
+                confirmed_plan_id == active_plan_id &&
+                confirmed_phase == phase &&
+                confirmed_waypoint_index == waypoint_index) {
+                const TrajectoryPath *path = phase_path(&request.trajectory,
+                                                        phase);
 
-            if ((phase == TRAJECTORY_PHASE_TRANSFER) &&
-                (state == TRAJECTORY_STATE_COMPLETE)) {
-                plan_active = 0U;
-                output.active = 0U;
-            } else if ((phase == TRAJECTORY_PHASE_APPROACH) &&
-                       (state == TRAJECTORY_STATE_COMPLETE) &&
-                       (RoutePlanning_ResumeTransferRequested != 0U)) {
+                if ((uint8_t)(waypoint_index + 1U) < path->point_count) {
+                    ++waypoint_index;
+                    publish_waypoint(&output, &request.trajectory, phase,
+                                     waypoint_index);
+                } else {
+                    output.state = TRAJECTORY_STATE_COMPLETE;
+                    output.active = phase == TRAJECTORY_PHASE_APPROACH ? 1U : 0U;
+                    publish_output(&output);
+                    if (phase == TRAJECTORY_PHASE_TRANSFER) {
+                        plan_active = 0U;
+                    }
+                }
+            }
+
+            if (phase == TRAJECTORY_PHASE_APPROACH &&
+                output.state == TRAJECTORY_STATE_COMPLETE &&
+                RoutePlanning_ResumeTransferRequested != 0U) {
                 (void)take_resume_request();
                 phase = TRAJECTORY_PHASE_TRANSFER;
-                phase_start_tick = now;
+                waypoint_index = 1U;
+                publish_waypoint(&output, &request.trajectory, phase,
+                                 waypoint_index);
             }
-            publish_output(&output);
         }
 
         osDelay(ROUTE_PLANNING_TASK_PERIOD_MS);

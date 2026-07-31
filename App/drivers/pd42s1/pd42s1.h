@@ -29,6 +29,7 @@ typedef enum {
     PD42S1_COMMAND_TRIGGER_HOME = 0x92,
     PD42S1_COMMAND_ABORT_HOME = 0x93,
     PD42S1_COMMAND_READ_HOME_STATE = 0x96,
+    PD42S1_COMMAND_READ_ARRIVAL = 0x30,
     PD42S1_COMMAND_TORQUE = 0xF0,
     PD42S1_COMMAND_ABSOLUTE_POSITION = 0xF2,
     PD42S1_COMMAND_RELATIVE_POSITION = 0xF3,
@@ -60,6 +61,11 @@ typedef enum {
     PD42S1_HOME_STATE_COMPLETE = 2,
     PD42S1_HOME_STATE_NOT_FOUND = 3,
 } pd42s1_home_state_t;
+
+typedef enum {
+    PD42S1_ARRIVAL_NOT_REACHED = 0,
+    PD42S1_ARRIVAL_REACHED = 1,
+} pd42s1_arrival_t;
 
 typedef enum {
     PD42S1_RESULT_SUCCESS = 0x01,
@@ -201,6 +207,16 @@ max485_status_t pd42s1_receive_home_reply(uint8_t motor_id,
 max485_status_t pd42s1_read_home_state(uint8_t motor_id,
                                       pd42s1_home_state_t *state,
                                       uint32_t timeout_ms);
+
+/**
+ * @brief Read the drive's physical in-position flag (0x30).
+ * @param arrival Receives 0 while moving or 1 after the position loop settles.
+ * @note The acknowledgement to a move command only confirms command acceptance;
+ *       use this query to decide whether the mechanism has actually arrived.
+ */
+max485_status_t pd42s1_read_arrival_flag(uint8_t motor_id,
+                                        pd42s1_arrival_t *arrival,
+                                        uint32_t timeout_ms);
 
 /**
  * @brief Receive and validate the response to a PD42S1 control command.

@@ -419,6 +419,52 @@ static void test_halves_are_fixed_by_the_shared_frame(void)
     check(result == DECISION_RESULT_WRONG_HALF, message);
 }
 
+static void test_trajectory_stops_above_pick_and_place(void)
+{
+    DecisionMove move;
+    TrajectoryPose current;
+    TrajectoryLimits limits;
+    TrajectoryRequest request;
+    const TrajectoryPose *approach_end;
+    const TrajectoryPose *transfer_start;
+    const TrajectoryPose *transfer_end;
+
+    (void)memset(&move, 0, sizeof(move));
+    (void)memset(&current, 0, sizeof(current));
+    (void)memset(&limits, 0, sizeof(limits));
+    move.pick.x_mm = 60.0f;
+    move.pick.y_mm = 40.0f;
+    move.pick.z_mm = -45.0f;
+    move.pick_above = move.pick;
+    move.pick_above.z_mm = 0.0f;
+    move.place.x_mm = 210.0f;
+    move.place.y_mm = 100.0f;
+    move.place.z_mm = -45.0f;
+    move.place.yaw_deg = 30.0f;
+    move.place_above = move.place;
+    move.place_above.z_mm = 0.0f;
+    current.x_mm = 78.0f;
+    current.y_mm = -50.0f;
+    current.z_mm = 0.0f;
+    limits.max_linear_velocity_mm_s = 120.0f;
+    limits.max_linear_acceleration_mm_s2 = 300.0f;
+    limits.max_yaw_velocity_deg_s = 90.0f;
+    limits.max_yaw_acceleration_deg_s2 = 180.0f;
+
+    check(Decision_BuildTrajectoryRequest(&move, &current, &limits,
+                                          &request) != 0U,
+          "above-only trajectory request was rejected");
+    approach_end = &request.approach.points[request.approach.point_count - 1U];
+    transfer_start = &request.transfer.points[0];
+    transfer_end = &request.transfer.points[request.transfer.point_count - 1U];
+    check(fabsf(approach_end->z_mm - move.pick_above.z_mm) < 0.001f,
+          "approach descended before the stepper axes were confirmed");
+    check(fabsf(transfer_start->z_mm - move.pick_above.z_mm) < 0.001f,
+          "transfer started from the lowered pick pose");
+    check(fabsf(transfer_end->z_mm - move.place_above.z_mm) < 0.001f,
+          "transfer descended before the place axes were confirmed");
+}
+
 int main(void)
 {
     test_exact_pieces();
@@ -430,6 +476,7 @@ int main(void)
     test_rejects_degenerate_frame();
     test_slanted_pieces_are_handled();
     test_halves_are_fixed_by_the_shared_frame();
+    test_trajectory_stops_above_pick_and_place();
 
     if (failures != 0) {
         printf("%d decision test(s) failed\n", failures);

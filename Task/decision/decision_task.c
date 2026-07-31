@@ -1,5 +1,6 @@
 #include "decision_task.h"
 
+#include "crane_control.h"
 #include "route_planning.h"
 
 #include "FreeRTOS.h"
@@ -94,6 +95,7 @@ void DecisionTask_GetDefaultRequest(DecisionTaskRequest *request)
     request->execution.limits.max_linear_acceleration_mm_s2 = 300.0f;
     request->execution.limits.max_yaw_velocity_deg_s = 90.0f;
     request->execution.limits.max_yaw_acceleration_deg_s2 = 180.0f;
+    request->execution.lift_travel_ms = 350U;
     request->execution.grip_dwell_ms = 300U;
     request->execution.release_dwell_ms = 200U;
 }
@@ -199,14 +201,47 @@ void Decision_App(void *argument)
                            DECISION_EXECUTION_APPROACH) {
                     if (route_output.phase == TRAJECTORY_PHASE_APPROACH &&
                         route_output.state == TRAJECTORY_STATE_COMPLETE) {
-                        output.execution_state = DECISION_EXECUTION_GRIP_DWELL;
+                        /* CraneControl lowers the lift in the same tick that
+                           confirms the final approach waypoint. COMPLETE means
+                           the stroke has already started. */
+                        output.execution_state =
+                            DECISION_EXECUTION_LOWER_PICK;
                         state_start_tick = now_tick;
+                        publish_output(&output);
+                    }
+                } else if (output.execution_state ==
+                           DECISION_EXECUTION_LOWER_PICK) {
+                    if (elapsed_milliseconds(state_start_tick, now_tick) >=
+                        request.execution.lift_travel_ms) {
+                        if (CraneControl_CommandGrip(1U) == CRANE_CONTROL_OK) {
+                            output.execution_state =
+                                DECISION_EXECUTION_GRIP_DWELL;
+                            state_start_tick = now_tick;
+                        } else {
+                            output.execution_state = DECISION_EXECUTION_ERROR;
+                            execution_active = 0U;
+                        }
                         publish_output(&output);
                     }
                 } else if (output.execution_state ==
                            DECISION_EXECUTION_GRIP_DWELL) {
                     if (elapsed_milliseconds(state_start_tick, now_tick) >=
                         request.execution.grip_dwell_ms) {
+                        if (CraneControl_CommandLift(CRANE_LIFT_RAISED) ==
+                            CRANE_CONTROL_OK) {
+                            output.execution_state =
+                                DECISION_EXECUTION_RAISE_PICK;
+                            state_start_tick = now_tick;
+                        } else {
+                            output.execution_state = DECISION_EXECUTION_ERROR;
+                            execution_active = 0U;
+                        }
+                        publish_output(&output);
+                    }
+                } else if (output.execution_state ==
+                           DECISION_EXECUTION_RAISE_PICK) {
+                    if (elapsed_milliseconds(state_start_tick, now_tick) >=
+                        request.execution.lift_travel_ms) {
                         RoutePlanning_ResumeTransfer();
                         output.execution_state = DECISION_EXECUTION_TRANSFER;
                         publish_output(&output);
@@ -222,14 +257,46 @@ void Decision_App(void *argument)
                            start instead of reverting to the solver's raw place
                            yaw, which may be outside the wrist workspace. */
                         current_pose = route_output.reference.pose;
-                        output.execution_state = DECISION_EXECUTION_RELEASE_DWELL;
+                        /* The final transfer waypoint starts the same direct
+                           descent before it is confirmed complete. */
+                        output.execution_state =
+                            DECISION_EXECUTION_LOWER_PLACE;
                         state_start_tick = now_tick;
+                        publish_output(&output);
+                    }
+                } else if (output.execution_state ==
+                           DECISION_EXECUTION_LOWER_PLACE) {
+                    if (elapsed_milliseconds(state_start_tick, now_tick) >=
+                        request.execution.lift_travel_ms) {
+                        if (CraneControl_CommandGrip(0U) == CRANE_CONTROL_OK) {
+                            output.execution_state =
+                                DECISION_EXECUTION_RELEASE_DWELL;
+                            state_start_tick = now_tick;
+                        } else {
+                            output.execution_state = DECISION_EXECUTION_ERROR;
+                            execution_active = 0U;
+                        }
                         publish_output(&output);
                     }
                 } else if (output.execution_state ==
                            DECISION_EXECUTION_RELEASE_DWELL) {
                     if (elapsed_milliseconds(state_start_tick, now_tick) >=
                         request.execution.release_dwell_ms) {
+                        if (CraneControl_CommandLift(CRANE_LIFT_RAISED) ==
+                            CRANE_CONTROL_OK) {
+                            output.execution_state =
+                                DECISION_EXECUTION_RAISE_PLACE;
+                            state_start_tick = now_tick;
+                        } else {
+                            output.execution_state = DECISION_EXECUTION_ERROR;
+                            execution_active = 0U;
+                        }
+                        publish_output(&output);
+                    }
+                } else if (output.execution_state ==
+                           DECISION_EXECUTION_RAISE_PLACE) {
+                    if (elapsed_milliseconds(state_start_tick, now_tick) >=
+                        request.execution.lift_travel_ms) {
                         ++output.active_move_index;
 
                         if (output.active_move_index >= output.plan.move_count) {
@@ -244,7 +311,7 @@ void Decision_App(void *argument)
                             output.execution_state =
                                 DECISION_EXECUTION_WAITING_ROUTE;
                             output.trajectory_result =
-                                TRAJECTORY_RESULT_INVALID_ARGUMENT;
+                                TRAJECTORY_RESULT_OK;
                         } else {
                             output.execution_state = DECISION_EXECUTION_ERROR;
                             execution_active = 0U;

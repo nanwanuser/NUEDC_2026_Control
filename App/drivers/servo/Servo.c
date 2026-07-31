@@ -279,6 +279,18 @@ HAL_StatusTypeDef Servo_SetAngle(Servo_Id_t servo_id, float angle_deg)
     return HAL_OK;
 }
 
+HAL_StatusTypeDef Servo_SetAngleImmediate(Servo_Id_t servo_id, float angle_deg)
+{
+    if ((Servo_IsValid(servo_id) == 0U) ||
+        (g_servo_state[servo_id].initialized == 0U)) {
+        return HAL_ERROR;
+    }
+
+    Servo_ResetState(servo_id, angle_deg);
+    Servo_WriteAngle(servo_id, g_servo_state[servo_id].current_angle_deg);
+    return HAL_OK;
+}
+
 HAL_StatusTypeDef Servo_SetAngles(float lift_angle_deg,
                                   float end_yaw_angle_deg)
 {

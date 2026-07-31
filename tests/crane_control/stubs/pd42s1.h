@@ -34,6 +34,11 @@ typedef enum {
     PD42S1_RESULT_SUCCESS = 0x01
 } pd42s1_result_t;
 
+typedef enum {
+    PD42S1_ARRIVAL_NOT_REACHED = 0,
+    PD42S1_ARRIVAL_REACHED = 1,
+} pd42s1_arrival_t;
+
 void pd42s1_init(void);
 max485_status_t pd42s1_set_torque(uint8_t motor_id,
                                  pd42s1_direction_t direction,
@@ -55,5 +60,8 @@ max485_status_t pd42s1_receive_response(uint8_t motor_id,
                                        pd42s1_command_t command,
                                        pd42s1_result_t *result,
                                        uint32_t timeout_ms);
+max485_status_t pd42s1_read_arrival_flag(uint8_t motor_id,
+                                        pd42s1_arrival_t *arrival,
+                                        uint32_t timeout_ms);
 
 #endif

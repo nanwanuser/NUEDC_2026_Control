@@ -12,6 +12,9 @@ extern "C" {
 typedef struct {
     TrajectoryPose current_pose;
     TrajectoryLimits limits;
+    /* Open-loop travel time allowed for the full-speed 90<->180 degree lift
+       servo move. The servo has no position feedback. */
+    uint32_t lift_travel_ms;
     uint32_t grip_dwell_ms;
     uint32_t release_dwell_ms;
 } DecisionExecutionConfig;
@@ -20,9 +23,13 @@ typedef enum {
     DECISION_EXECUTION_IDLE = 0,
     DECISION_EXECUTION_WAITING_ROUTE,
     DECISION_EXECUTION_APPROACH,
+    DECISION_EXECUTION_LOWER_PICK,
     DECISION_EXECUTION_GRIP_DWELL,
+    DECISION_EXECUTION_RAISE_PICK,
     DECISION_EXECUTION_TRANSFER,
+    DECISION_EXECUTION_LOWER_PLACE,
     DECISION_EXECUTION_RELEASE_DWELL,
+    DECISION_EXECUTION_RAISE_PLACE,
     DECISION_EXECUTION_COMPLETE,
     DECISION_EXECUTION_ERROR
 } DecisionExecutionState;

@@ -18,7 +18,13 @@ typedef enum {
     CRANE_CONTROL_SERVO_ERROR,
     CRANE_CONTROL_TRANSPORT_ERROR,
     CRANE_CONTROL_DRIVE_REJECTED,
+    CRANE_CONTROL_ARRIVAL_TIMEOUT,
 } CraneControlStatus;
+
+typedef enum {
+    CRANE_LIFT_RAISED = 0,
+    CRANE_LIFT_LOWERED = 1,
+} CraneLiftPosition;
 
 typedef struct {
     TrajectoryPose origin;
@@ -59,6 +65,9 @@ typedef struct {
        the worst case, which is a full stroke from the far end. */
     uint16_t home_torque_current_ma;
     uint16_t home_push_ms;
+    /* Maximum time allowed after a trajectory endpoint for both drives to set
+       their physical in-position flags. */
+    uint32_t arrival_timeout_ms;
 } CraneControlConfig;
 
 typedef struct {
@@ -76,6 +85,11 @@ typedef struct {
     uint32_t plan_id;
     TrajectoryPhase phase;
     TrajectoryState planner_state;
+    uint8_t waypoint_index;
+    CraneLiftPosition lift_position;
+    uint8_t yaw_at_target;
+    uint8_t reach_at_target;
+    uint8_t axes_at_target;
     uint8_t initialized;
 } CraneControlState;
 
@@ -119,6 +133,13 @@ void CraneControl_Update(void);
  * @param state Destination state.
  */
 void CraneControl_GetState(CraneControlState *state);
+
+/** Immediately write a full-speed lift move to the fixed 110 degree raised or
+ * 180 degree lowered position. */
+CraneControlStatus CraneControl_CommandLift(CraneLiftPosition position);
+
+/** Queue an electromagnet command in the crane task. */
+CraneControlStatus CraneControl_CommandGrip(uint8_t enabled);
 
 /**
  * @brief Copy the active configuration, so callers can place their targets in
@@ -207,14 +228,12 @@ CraneControlStatus CraneControl_PlanTransitPoses(const TrajectoryPose *from,
  * @param pose Cartesian pose in the planner frame.
  * @return CRANE_CONTROL_OK when the pose maps inside boom, reach, and wrist
  *         travel; CRANE_CONTROL_OUT_OF_WORKSPACE otherwise.
- * @note The lift is driven by the sign of the z change rather than by z itself,
- *       so z is not part of the check. Usable before CraneControl_Init().
+ * @note Lift motion is commanded separately with CraneControl_CommandLift().
+ *       Usable before CraneControl_Init().
  */
 CraneControlStatus CraneControl_CheckPose(const TrajectoryPose *pose);
 
-/* How often CraneControl_Update() runs. The controller paces each axis to cover
-   one tick's step per tick, so this has to match the task's actual period or the
-   motion is either jerky or lagging; crane_control_task.c uses it for the delay. */
+/* How often CraneControl_Update() polls the two physical arrival flags. */
 #define CRANE_TICK_PERIOD_MS 20U
 
 /**
