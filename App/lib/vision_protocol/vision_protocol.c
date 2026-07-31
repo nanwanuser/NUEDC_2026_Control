@@ -13,6 +13,12 @@ static int16_t read_i16_le(const uint8_t *data)
     return (int16_t)read_u16_le(data);
 }
 
+static void write_u16_le(uint8_t *data, uint16_t value)
+{
+    data[0] = (uint8_t)(value & 0xFFU);
+    data[1] = (uint8_t)(value >> 8U);
+}
+
 uint16_t VisionProtocol_Crc16(const uint8_t *data, size_t length)
 {
     uint16_t crc = 0xFFFFU;
@@ -413,4 +419,29 @@ uint8_t VisionProtocolStabilizer_Add(
 
     *stable_packet = stabilizer->candidate;
     return 1U;
+}
+
+size_t VisionProtocol_EncodeAck(uint16_t seq,
+                                VisionProtocolAckStatus status,
+                                uint8_t *buffer,
+                                size_t capacity)
+{
+    uint16_t crc;
+
+    if (buffer == NULL || capacity < VISION_PROTOCOL_ACK_FRAME_LENGTH) {
+        return 0U;
+    }
+
+    buffer[0] = VISION_PROTOCOL_HEADER_FIRST;
+    buffer[1] = VISION_PROTOCOL_HEADER_SECOND;
+    buffer[2] = VISION_PROTOCOL_VERSION;
+    buffer[3] = VISION_PROTOCOL_TYPE_ACK;
+    write_u16_le(&buffer[4], seq);
+    write_u16_le(&buffer[6], 1U);
+    buffer[8] = (uint8_t)status;
+    crc = VisionProtocol_Crc16(&buffer[2], 7U);
+    write_u16_le(&buffer[9], crc);
+    buffer[11] = VISION_PROTOCOL_END_FIRST;
+    buffer[12] = VISION_PROTOCOL_END_SECOND;
+    return VISION_PROTOCOL_ACK_FRAME_LENGTH;
 }

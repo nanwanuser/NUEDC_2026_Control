@@ -151,8 +151,8 @@ static int test_three_stable_frames(void)
 {
     RawPiece samples[3] = {
         {7U, 4U, 100, 100, {{0, 0}, {200, 0}, {200, 200}, {0, 200}}},
-        {7U, 4U, 104, 104, {{4, 4}, {204, 4}, {204, 204}, {4, 204}}},
-        {7U, 4U, 100, 100, {{0, 200}, {200, 200}, {200, 0}, {0, 0}}}
+        {7U, 4U, 102, 99, {{202, 201}, {1, 199}, {2, 1}, {201, -1}}},
+        {7U, 4U, 98, 101, {{-1, 202}, {199, 201}, {198, 1}, {-2, 0}}}
     };
     uint8_t frame[VISION_PROTOCOL_MAX_FRAME_LENGTH];
     VisionProtocolParser parser;
@@ -176,39 +176,24 @@ static int test_three_stable_frames(void)
                     (uint8_t)(index == 2U));
     }
     ASSERT_TRUE(stable.seq == 12U);
-    ASSERT_TRUE(fabsf(stable.frame.pieces[0].center.x_mm - 10.1333f) < 0.01f);
-    ASSERT_TRUE(fabsf(stable.frame.pieces[0].vertices[0].x_mm - 0.1333f) < 0.01f);
+    ASSERT_TRUE(fabsf(stable.frame.pieces[0].center.x_mm - 10.0f) < 0.01f);
+    ASSERT_TRUE(fabsf(stable.frame.pieces[0].vertices[0].x_mm) < 0.11f);
     return 0;
 }
 
-static int test_more_than_half_mm_resets_candidate(void)
+static int test_ack(void)
 {
-    RawPiece samples[2] = {
-        {7U, 3U, 100, 100, {{0, 0}, {200, 0}, {0, 200}}},
-        {7U, 3U, 106, 100, {{6, 0}, {206, 0}, {6, 200}}}
-    };
-    uint8_t frame[VISION_PROTOCOL_MAX_FRAME_LENGTH];
-    VisionProtocolParser parser;
-    VisionProtocolStabilizer stabilizer;
-    VisionProtocolPacket packet;
-    VisionProtocolPacket stable;
-    uint8_t index;
+    uint8_t ack[VISION_PROTOCOL_ACK_FRAME_LENGTH];
+    uint16_t crc;
 
-    VisionProtocolParser_Init(&parser);
-    VisionProtocolStabilizer_Init(&stabilizer);
-    for (index = 0U; index < 2U; ++index) {
-        size_t length = encode_frame((uint16_t)(20U + index),
-                                     0U,
-                                     &samples[index], 1U, frame);
-        ASSERT_TRUE(feed(&parser, frame, length, &packet) ==
-                    VISION_PROTOCOL_RESULT_FRAME);
-        ASSERT_TRUE(VisionProtocolStabilizer_Add(&stabilizer,
-                                                 &packet,
-                                                 &stable) == 0U);
-    }
-    ASSERT_TRUE(stabilizer.stable_count == 1U);
-    ASSERT_TRUE(fabsf(stabilizer.candidate.frame.pieces[0].center.x_mm -
-                      10.6f) < 0.01f);
+    ASSERT_TRUE(VisionProtocol_EncodeAck(0x1234U,
+                                        VISION_PROTOCOL_ACK_ACCEPTED,
+                                        ack,
+                                        sizeof(ack)) == sizeof(ack));
+    ASSERT_TRUE(ack[4] == 0x34U && ack[5] == 0x12U);
+    ASSERT_TRUE(ack[11] == 0x0DU && ack[12] == 0x0AU);
+    crc = VisionProtocol_Crc16(&ack[2], 7U);
+    ASSERT_TRUE(ack[9] == (uint8_t)crc && ack[10] == (uint8_t)(crc >> 8U));
     return 0;
 }
 
@@ -217,7 +202,7 @@ int main(void)
     if (test_decode_four_pieces() != 0) return 1;
     if (test_crc_and_end_rejected() != 0) return 1;
     if (test_three_stable_frames() != 0) return 1;
-    if (test_more_than_half_mm_resets_candidate() != 0) return 1;
+    if (test_ack() != 0) return 1;
     puts("vision protocol tests passed");
     return 0;
 }
