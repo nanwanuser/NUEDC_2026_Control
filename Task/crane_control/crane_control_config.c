@@ -54,12 +54,12 @@
    use this value to calculate either commanded angle. */
 #define CRANE_LIFT_ZERO_ANGLE_DEG         SERVO_LIFT_INIT_ANGLE_DEG
 #define CRANE_END_YAW_CENTER_DEG           90.0f
-#define CRANE_YAW_SPEED_RPM               40U
-#define CRANE_REACH_SPEED_RPM             40U
+#define CRANE_YAW_SPEED_RPM               5U
+#define CRANE_REACH_SPEED_RPM             5U
 /* Each waypoint is one fixed absolute-position command, so the drive owns the
    acceleration and braking profile. Lower values produce gentler ramps. */
-#define CRANE_YAW_ACCELERATION            10U
-#define CRANE_REACH_ACCELERATION          5U
+#define CRANE_YAW_ACCELERATION            100U
+#define CRANE_REACH_ACCELERATION          100U
 /* Startup datum. Neither axis has a limit switch, and the drive's own switchless
    homing is not used: it retreats to a configured origin position after finding the
    stop, and its outcome only arrives as a state code. Instead both axes are simply
