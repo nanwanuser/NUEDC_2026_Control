@@ -6,6 +6,8 @@
 #define PD42S1_POSITION_PAYLOAD_LENGTH 8U
 /* Mode, direction, four speed bytes, two current bytes. */
 #define PD42S1_HOME_PARAMETERS_PAYLOAD_LENGTH 8U
+/* One int32 position. */
+#define PD42S1_LIMIT_ORIGIN_PAYLOAD_LENGTH 4U
 
 static bool pd42s1_direction_is_valid(pd42s1_direction_t direction)
 {
@@ -21,7 +23,9 @@ static bool pd42s1_command_is_supported(pd42s1_command_t command)
     return command == PD42S1_COMMAND_TORQUE ||
            command == PD42S1_COMMAND_ABSOLUTE_POSITION ||
            command == PD42S1_COMMAND_RELATIVE_POSITION ||
-           command == PD42S1_COMMAND_CLEAR_POSITION;
+           command == PD42S1_COMMAND_CLEAR_POSITION ||
+           command == PD42S1_COMMAND_RELEASE_STALL_PROTECTION ||
+           command == PD42S1_COMMAND_CLEAR_STATE;
 }
 
 static bool pd42s1_result_is_valid(uint8_t result)
@@ -139,6 +143,21 @@ max485_status_t pd42s1_receive_home_reply(uint8_t motor_id,
                : MAX485_STATUS_UNEXPECTED_FRAME;
 }
 
+max485_status_t pd42s1_set_left_limit_origin(uint8_t motor_id,
+                                          int32_t position_units)
+{
+    uint8_t payload[PD42S1_LIMIT_ORIGIN_PAYLOAD_LENGTH];
+
+    if (!pd42s1_is_supported_motor(motor_id)) {
+        return MAX485_STATUS_INVALID_ARGUMENT;
+    }
+    /* The field is int32 on the wire, so the cast is the two's-complement
+       encoding the drive expects, not a range change. */
+    pd42s1_write_u32_be(payload, (uint32_t)position_units);
+    return max485_send_frame(motor_id, PD42S1_COMMAND_SET_LEFT_LIMIT_ORIGIN,
+                             payload, sizeof(payload), PD42S1_UART_TIMEOUT_MS);
+}
+
 max485_status_t pd42s1_set_home_parameters(uint8_t motor_id,
                                          pd42s1_home_mode_t mode,
                                          pd42s1_direction_t direction,
@@ -223,6 +242,25 @@ max485_status_t pd42s1_clear_position(uint8_t motor_id)
         return MAX485_STATUS_INVALID_ARGUMENT;
     }
     return max485_send_frame(motor_id, PD42S1_COMMAND_CLEAR_POSITION,
+                             NULL, 0U, PD42S1_UART_TIMEOUT_MS);
+}
+
+max485_status_t pd42s1_release_stall_protection(uint8_t motor_id)
+{
+    if (!pd42s1_is_supported_motor(motor_id)) {
+        return MAX485_STATUS_INVALID_ARGUMENT;
+    }
+    return max485_send_frame(motor_id,
+                             PD42S1_COMMAND_RELEASE_STALL_PROTECTION,
+                             NULL, 0U, PD42S1_UART_TIMEOUT_MS);
+}
+
+max485_status_t pd42s1_clear_state(uint8_t motor_id)
+{
+    if (!pd42s1_is_supported_motor(motor_id)) {
+        return MAX485_STATUS_INVALID_ARGUMENT;
+    }
+    return max485_send_frame(motor_id, PD42S1_COMMAND_CLEAR_STATE,
                              NULL, 0U, PD42S1_UART_TIMEOUT_MS);
 }
 

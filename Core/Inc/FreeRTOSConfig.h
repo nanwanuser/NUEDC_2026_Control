@@ -64,6 +64,10 @@
 #define configSUPPORT_DYNAMIC_ALLOCATION         1
 #define configUSE_IDLE_HOOK                      0
 #define configUSE_TICK_HOOK                      0
+/* 这两项 CubeMX 界面里默认是关的，重新生成会把它们删掉，必须手工加回：
+   freertos.c 里的 vApplicationMallocFailedHook() 和
+   vApplicationStackOverflowHook() 只有在这里置位时才会被调用，否则堆耗尽和
+   栈溢出都变成无声的死机。 */
 #define configUSE_MALLOC_FAILED_HOOK             1
 #define configCHECK_FOR_STACK_OVERFLOW           2
 #define configCPU_CLOCK_HZ                       ( SystemCoreClock )
@@ -73,7 +77,9 @@
 /* Six dynamic threads request 19968 bytes of stack in total (see
    Core/Src/freertos.c); add the TCBs and heap_4 block headers and the floor is
    just above 20 KB. Undersizing this silently returns NULL from the last
-   osThreadNew() calls, which killed the Mission and Vision_uart threads. */
+   osThreadNew() calls, which killed the Mission and Vision_uart threads.
+   CubeMX only knows about the four threads in the .ioc, so regenerating resets
+   this to a size that fits those four alone - it has to be restored by hand. */
 #define configTOTAL_HEAP_SIZE                    ((size_t)26624)
 #define configMAX_TASK_NAME_LEN                  ( 16 )
 #define configUSE_TRACE_FACILITY                 1

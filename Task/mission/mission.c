@@ -34,28 +34,26 @@
 /* Where the assembled rectangle goes.
  *
  * The task fixes this rather than leaving it free: the pieces are laid out in one
- * half of the A4 sheet and have to be assembled in the other. So the target has
- * to be stated in the sheet's own coordinates, which are the world coordinates
- * every layer shares - long edge along x (0..297), short edge along y (0..210),
- * with the column standing off the y = 0 long edge at x = 148.5. Deriving it from
- * the reach band instead put it at x = 148.5, which is the dividing line itself.
+ * half of the A4 sheet and have to be assembled in the other. So the target is
+ * stated in the sheet's own coordinates, which are the vision end's and therefore
+ * the coordinates every layer shares - landscape sheet, origin at the top-left
+ * corner, +x right along the long edge (0..297), +y down the short edge (0..210),
+ * with the column standing off the y = 0 long edge at x = 148.5.
  *
- * The halves are therefore x < 148.5 and x > 148.5, both of them at much the
- * same reach - the divider runs along the boom's radius, not across it. The
- * pieces sit on the side the boom parks towards, and startup_boom_yaw_deg of
- * +90 puts the park heading along -x, so the assembly half is x > 148.5.
+ * Picking is the left half (x < 148.5) and assembly the right half (x > 148.5),
+ * fixed by that shared frame rather than inferred from where the pieces landed.
+ * Both halves sit at much the same reach, because the divider runs out along the
+ * boom's radius rather than across it.
  *
- * The offset from the divider is the largest allowed rectangle's own half-width,
- * so a 12x9 cm result laid out along the sheet spans x = 148.5..268.5: entirely
- * in its half and clear of the far edge. y sits near the middle of the short
- * edge rather than exactly on it, because the far corner then works out to
- * dx = 120, dy = 190, r = 225 mm against the 230 mm reach limit, while the
- * nearest corner is r = 100 mm against the 70 mm minimum. */
-#define MISSION_A4_LONG_EDGE_MM        297.0f
-#define MISSION_TARGET_HALF_OFFSET_MM  60.0f
-#define MISSION_TARGET_CENTER_X_MM     (MISSION_A4_LONG_EDGE_MM / 2.0f + \
-                                        MISSION_TARGET_HALF_OFFSET_MM)
-#define MISSION_TARGET_CENTER_Y_MM     95.0f
+ * The centre is chosen for reach margin, since that is the binding constraint:
+ * every corner of the largest allowed 12x9 cm rectangle has to stay inside the
+ * crane's 70..230 mm band in *either* orientation, because which way round the
+ * solver lays the result out is not known here. At (210.5, 85.5) the worst corner
+ * over both orientations is r = 222.9 mm and the nearest is r = 77.4 mm, so about
+ * 7 mm of margin at each end - the most any point in this half leaves. It also
+ * keeps that rectangle clear of the divider and of all four sheet edges. */
+#define MISSION_TARGET_CENTER_X_MM     210.5f
+#define MISSION_TARGET_CENTER_Y_MM     85.5f
 
 
 typedef struct {
@@ -343,6 +341,12 @@ static MissionRunDiagnosis diagnose_run_failure(const MissionOutput *output)
     }
     if (output->decision_result == DECISION_RESULT_SEARCH_LIMIT) {
         return MISSION_RUN_DIAG_SEARCH_LIMIT;
+    }
+    /* Well-formed pieces on the wrong side of the midline. Reported separately
+       because no tolerance or node budget will help: the sheet was laid out the
+       wrong way round, or the camera is not on the shared A4 frame. */
+    if (output->decision_result == DECISION_RESULT_WRONG_HALF) {
+        return MISSION_RUN_DIAG_WRONG_HALF;
     }
     if (output->decision_result != DECISION_RESULT_OK) {
         return MISSION_RUN_DIAG_NO_SOLUTION;

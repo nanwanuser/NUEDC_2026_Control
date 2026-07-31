@@ -1,4 +1,5 @@
 #include "route_planning.h"
+#include "route_yaw_bias.h"
 
 #include "crane_control.h"
 
@@ -52,43 +53,6 @@ static void publish_output(const RoutePlanningOutput *output)
     taskENTER_CRITICAL();
     RoutePlanning_Output = *output;
     taskEXIT_CRITICAL();
-}
-
-/* The decision layer picks yaw angles from the puzzle geometry alone, with no
-   notion of how far the wrist can turn. Both phases of a move are re-datumed by
-   one shared offset here, which turns the piece by exactly the same amount but
-   keeps the wrist near its centre.
-
-   Each move is biased independently, so the wrist re-datums between moves. That
-   happens at the previous place point, where the piece has just been released,
-   so it turns the empty tool and cannot disturb the assembled puzzle. */
-static void apply_yaw_bias(TrajectoryRequest *trajectory)
-{
-    TrajectoryPose poses[2U * TRAJECTORY_MAX_WAYPOINTS];
-    uint8_t count = 0U;
-    uint8_t index;
-    float bias_deg = 0.0f;
-
-    for (index = 0U; index < trajectory->approach.point_count; ++index) {
-        poses[count] = trajectory->approach.points[index];
-        ++count;
-    }
-    for (index = 0U; index < trajectory->transfer.point_count; ++index) {
-        poses[count] = trajectory->transfer.points[index];
-        ++count;
-    }
-    if (count == 0U) {
-        return;
-    }
-    /* An unreachable span still gets the best-effort offset: the crane's own
-       workspace check is what stops the move. */
-    (void)CraneControl_ChooseYawBias(poses, count, &bias_deg);
-    for (index = 0U; index < trajectory->approach.point_count; ++index) {
-        trajectory->approach.points[index].yaw_deg += bias_deg;
-    }
-    for (index = 0U; index < trajectory->transfer.point_count; ++index) {
-        trajectory->transfer.points[index].yaw_deg += bias_deg;
-    }
 }
 
 /* The decision layer names only the points it cares about, and the trajectory
@@ -243,7 +207,7 @@ void Route_planning_App(void *argument)
 
         if (RoutePlanning_RequestPending != 0U) {
             copy_input(&request);
-            apply_yaw_bias(&request.trajectory);
+            RoutePlanning_ApplyYawBias(&request.trajectory);
             result = prepare_path(&request.trajectory) != 0U
                          ? Trajectory_Generate(&request.trajectory, &plan)
                          : TRAJECTORY_RESULT_INVALID_ARGUMENT;

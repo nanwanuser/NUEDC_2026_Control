@@ -45,10 +45,11 @@ extern "C" {
 #define DECISION_OVERLAP_TOLERANCE_MM   \
     (0.5f * DECISION_EDGE_TOLERANCE_MM + 1.0f)
 
-/* The sheet's midline along its long edge. The task starts the pieces in one half
-   and scores the assembly in the other, but which half is which depends on the
-   corner the camera calibration calls the origin, so the solver reads it off the
-   pieces it was given rather than assuming. */
+/* The sheet's midline along its long edge, in the shared A4 frame: landscape
+   sheet, origin at the top-left corner, +X right along the long edge, +Y down the
+   short edge. Both ends of the link use that frame, so which half is which is
+   fixed rather than inferred: the pieces are picked from the left half
+   (x < 148.5) and assembled in the right half (x > 148.5). */
 #define DECISION_PAPER_DIVIDER_X_MM     148.5f
 
 /* Target rectangle envelope, 9x5 cm to 12x9 cm in the task, widened by the
@@ -83,9 +84,10 @@ typedef struct {
 
 typedef struct {
     DecisionPoint target_center;
-    /* Long-axis coordinate of the line splitting the sheet into the half the
-       pieces start in and the half they are assembled in. Set to zero to place
-       the rectangle at target_center unconditionally; see
+    /* X of the line splitting the sheet into the pick half (x below it) and the
+       place half (x above it). The assembly is held in the place half and the
+       pieces are required to come from the pick half. Set to zero to place the
+       rectangle at target_center unconditionally and skip that check; see
        DECISION_PAPER_DIVIDER_X_MM. */
     float paper_divider_x_mm;
     float pick_z_mm;
@@ -123,7 +125,11 @@ typedef enum {
     DECISION_RESULT_INVALID_FRAME,
     DECISION_RESULT_NO_SOLUTION,
     DECISION_RESULT_SEARCH_LIMIT,
-    DECISION_RESULT_NUMERIC_ERROR
+    DECISION_RESULT_NUMERIC_ERROR,
+    /* A piece was measured outside the pick half, so either the pieces were laid
+       out in the wrong half of the sheet or the camera is not on the frame this
+       code expects. Both need a human, which is why it is not worked around. */
+    DECISION_RESULT_WRONG_HALF
 } DecisionResult;
 
 void Decision_GetDefaultConfig(DecisionConfig *config);

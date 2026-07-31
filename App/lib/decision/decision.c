@@ -814,8 +814,13 @@ void Decision_GetDefaultConfig(DecisionConfig *config)
         return;
     }
 
-    config->target_center.x_mm = 105.0f;
-    config->target_center.y_mm = 220.0f;
+    /* Centre of the place half of the sheet: the pieces come from x < 148.5 and
+       are assembled on the other side of that line. The task layer overrides this
+       with a point chosen against the crane's reach band, but the default has to
+       be in the right half on its own, or a caller that takes it as-is assembles
+       on top of the pieces. */
+    config->target_center.x_mm = 222.75f;
+    config->target_center.y_mm = 105.0f;
     config->paper_divider_x_mm = DECISION_PAPER_DIVIDER_X_MM;
     config->pick_z_mm = 0.0f;
     config->transit_z_mm = 40.0f;
@@ -852,6 +857,18 @@ DecisionResult Decision_SolveGeneral(const DecisionVisionFrame *frame,
     if (normalize_frame(frame, search.pieces) == 0U) {
         return DECISION_RESULT_INVALID_FRAME;
     }
+    /* Checked before the layout search rather than after it, because a frame from
+       the wrong half is not a geometry problem and solving it first would only
+       spend the node budget to reach the same answer. */
+    if (config->paper_divider_x_mm > 0.0f) {
+        for (piece_index = 0U; piece_index < frame->piece_count;
+             ++piece_index) {
+            if (frame->pieces[piece_index].center.x_mm >=
+                config->paper_divider_x_mm) {
+                return DECISION_RESULT_WRONG_HALF;
+            }
+        }
+    }
     search.config = config;
     search.piece_count = frame->piece_count;
     search.best_score = FLT_MAX;
@@ -876,28 +893,10 @@ DecisionResult Decision_SolveGeneral(const DecisionVisionFrame *frame,
     rectangle_center_y = 0.5f * (search.best_min_y + search.best_max_y);
     rectangle_cosine = cosf(search.best_rect_angle_rad);
     rectangle_sine = sinf(search.best_rect_angle_rad);
+    /* Which half is which is fixed by the shared A4 frame, not read off the
+       pieces: picking happens in the left half and assembly in the right one, so
+       the stated target is used exactly as given. */
     target_center = config->target_center;
-    /* Put the rectangle in the half the pieces did not come from. The caller
-       states one target, on one side of the divider; if the pieces turn out to
-       lie on that same side, mirror the target across the divider instead of
-       assembling on top of them. Which half the pieces occupy is a property of
-       the calibration's choice of origin corner, not of the mechanism, so
-       reading it off the frame is what keeps the two ends from having to
-       agree. */
-    if (config->paper_divider_x_mm > 0.0f) {
-        float piece_x_sum = 0.0f;
-
-        for (piece_index = 0U; piece_index < search.piece_count;
-             ++piece_index) {
-            piece_x_sum += frame->pieces[piece_index].center.x_mm;
-        }
-        if ((piece_x_sum / (float)search.piece_count >
-                 config->paper_divider_x_mm) ==
-            (target_center.x_mm > config->paper_divider_x_mm)) {
-            target_center.x_mm = 2.0f * config->paper_divider_x_mm -
-                                 target_center.x_mm;
-        }
-    }
 
     (void)memset(plan, 0, sizeof(*plan));
     plan->seq = frame->seq;

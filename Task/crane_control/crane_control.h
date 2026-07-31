@@ -47,15 +47,18 @@ typedef struct {
     uint8_t reach_acceleration;
     uint8_t expect_stepper_response;
     /* Non-zero lets startup datum both axes against their mechanical ends instead
-       of trusting that the mechanism was parked before reset. Zero it if the boom's
-       limit switch is removed: the drive would then seek a signal that never
-       arrives and time out. */
+       of trusting that the mechanism was parked before reset. Zero it if the
+       mechanism must not be driven into its stops at all, in which case the
+       operator owns the datum again. */
     uint8_t home_on_startup;
-    /* Seek speed and stall threshold for the homing run. The current only
-       matters in the switchless modes, where the end is found by stalling - so on
-       this crane it is the reach axis that depends on it. */
-    uint16_t home_speed_rpm;
-    uint16_t home_limit_current_ma;
+    /* Torque and duration of the startup push that finds both hard stops. Neither
+       axis has a switch and neither is homed by the drive any more: startup simply
+       holds this current towards each stop for this long and takes whatever the
+       mechanism is resting against as zero. The current has to overcome friction
+       and stay gentle enough to sit against the frame; the duration has to cover
+       the worst case, which is a full stroke from the far end. */
+    uint16_t home_torque_current_ma;
+    uint16_t home_push_ms;
 } CraneControlConfig;
 
 typedef struct {
@@ -215,17 +218,22 @@ CraneControlStatus CraneControl_CheckPose(const TrajectoryPose *pose);
 #define CRANE_TICK_PERIOD_MS 20U
 
 /**
- * @brief Datum both stepper axes against their mechanical ends.
- * @param timeout_ms How long to wait per axis for the drive to report the origin.
- * @return CRANE_CONTROL_OK once both axes are datumed, and their end stops have
- *         been established as each axis's zero.
- * @note The boom homes against its limit switch; the reach has no switch and homes
- *       against the hard end it reaches when fully drawn in, which the drive
- *       detects from the motor loading up. Blocks while the drives seek, so it
- *       belongs in startup rather than the control loop. Does nothing and reports
- *       OK when config.home_on_startup is zero.
+ * @brief Datum both stepper axes by pushing them against their mechanical ends.
+ * @param push_ms How long to hold torque towards each stop; zero uses
+ *                config.home_push_ms.
+ * @return CRANE_CONTROL_OK once both axes have been pushed home and their end
+ *         stops established as each axis's zero.
+ * @note Does not use the drive's homing mode. Neither axis has a limit switch, and
+ *       the drive's switchless homing was retreating to its own origin position and
+ *       reporting states this code could not act on. Instead both axes are simply
+ *       held in torque mode (config.home_torque_current_ma) towards their stop for
+ *       config.home_push_ms, after which whatever they are resting against is
+ *       taken as zero. Both axes are pushed at once, which is safe because the
+ *       reach only ever draws inwards and the boom's stop is at a fixed angle.
+ *       Blocks for the whole push, so it belongs in startup rather than the control
+ *       loop. Does nothing and reports OK when config.home_on_startup is zero.
  */
-CraneControlStatus CraneControl_Home(uint32_t timeout_ms);
+CraneControlStatus CraneControl_Home(uint32_t push_ms);
 
 /**
  * @brief Hardware hook for the planner's grip flag.

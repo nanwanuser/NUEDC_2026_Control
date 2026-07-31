@@ -106,10 +106,16 @@ static void build_frame(DecisionVisionFrame *frame, float error_mm)
     set_piece(&frame->pieces[2], 3U, 4U, p2);
     set_piece(&frame->pieces[3], 4U, 4U, p3);
 
-    scatter(&frame->pieces[0], 17.0f, 40.0f, 210.0f);
-    scatter(&frame->pieces[1], -35.0f, 150.0f, 195.0f);
-    scatter(&frame->pieces[2], 78.0f, 60.0f, 260.0f);
-    scatter(&frame->pieces[3], -61.0f, 175.0f, 255.0f);
+    /* Scattered across the pick half of the sheet, which is where the vision end
+       measures them: landscape A4, top-left origin, +X right, +Y down, pieces
+       left of x = 148.5 and the assembly built right of it. The solver rejects a
+       frame whose pieces straddle that line, so these translations are chosen to
+       put every piece centre well inside the left half rather than anywhere
+       convenient. */
+    scatter(&frame->pieces[0], 17.0f, 21.0f, 31.0f);
+    scatter(&frame->pieces[1], -35.0f, 38.5f, 83.5f);
+    scatter(&frame->pieces[2], 78.0f, 76.0f, 66.0f);
+    scatter(&frame->pieces[3], -61.0f, 52.0f, 146.0f);
 }
 
 static const char *result_name(DecisionResult result)
@@ -121,6 +127,7 @@ static const char *result_name(DecisionResult result)
     case DECISION_RESULT_NO_SOLUTION:      return "NO_SOLUTION";
     case DECISION_RESULT_SEARCH_LIMIT:     return "SEARCH_LIMIT";
     case DECISION_RESULT_NUMERIC_ERROR:    return "NUMERIC_ERROR";
+    case DECISION_RESULT_WRONG_HALF:       return "WRONG_HALF";
     default:                               return "?";
     }
 }
@@ -263,8 +270,8 @@ static void test_small_rectangle(void)
     frame.piece_count = 2U;
     set_piece(&frame.pieces[0], 1U, 4U, left);
     set_piece(&frame.pieces[1], 2U, 4U, right);
-    scatter(&frame.pieces[0], 23.0f, 50.0f, 205.0f);
-    scatter(&frame.pieces[1], -47.0f, 160.0f, 240.0f);
+    scatter(&frame.pieces[0], 23.0f, 25.0f, 30.0f);
+    scatter(&frame.pieces[1], -47.0f, 40.0f, 130.0f);
 
     Decision_GetDefaultConfig(&config);
     check(Decision_Solve(&frame, &config, &plan) == DECISION_RESULT_OK,
@@ -300,10 +307,10 @@ static void build_slanted_frame(DecisionVisionFrame *frame, float error_mm)
     set_piece(&frame->pieces[2], 3U, 4U, q2);
     set_piece(&frame->pieces[3], 4U, 3U, t3);
 
-    scatter(&frame->pieces[0], 13.0f, 45.0f, 205.0f);
-    scatter(&frame->pieces[1], -52.0f, 155.0f, 200.0f);
-    scatter(&frame->pieces[2], 67.0f, 55.0f, 265.0f);
-    scatter(&frame->pieces[3], -29.0f, 170.0f, 260.0f);
+    scatter(&frame->pieces[0], 13.0f, 22.0f, 28.0f);
+    scatter(&frame->pieces[1], -52.0f, 40.0f, 88.0f);
+    scatter(&frame->pieces[2], 67.0f, 78.0f, 62.0f);
+    scatter(&frame->pieces[3], -29.0f, 50.0f, 150.0f);
 }
 
 /* Documents what the solver does with slanted, non-interlocking pieces. These
@@ -335,22 +342,16 @@ static void test_slanted_pieces_are_handled(void)
           "slanted pieces: node budget exhausted on only four pieces");
 }
 
-/* The task starts the pieces in one half of the sheet and scores the assembly in
-   the other, but which half is which depends on the corner the camera
-   calibration calls the origin. The solver therefore has to work it out from the
-   pieces: the same stated target has to end up on the far side of the divider
-   from wherever the pieces actually are, and mirroring it must not disturb the
-   layout itself. */
-static void solve_in_half(float piece_offset_x_mm,
-                          float target_x_mm,
-                          const char *label,
-                          DecisionPoint *centroid)
+/* Shifts every piece along x and returns what the solver made of the frame,
+   along with the centroid of the place points it chose. */
+static DecisionResult solve_shifted(float piece_offset_x_mm,
+                                    DecisionPoint *centroid)
 {
     DecisionVisionFrame frame;
     DecisionConfig config;
     DecisionPlan plan;
+    DecisionResult result;
     uint8_t index;
-    char message[128];
 
     build_frame(&frame, 0.0f);
     for (index = 0U; index < frame.piece_count; ++index) {
@@ -363,43 +364,59 @@ static void solve_in_half(float piece_offset_x_mm,
     }
 
     Decision_GetDefaultConfig(&config);
-    config.target_center.x_mm = target_x_mm;
-    config.target_center.y_mm = 95.0f;
-
-    (void)snprintf(message, sizeof(message), "%s: expected OK", label);
-    check(Decision_Solve(&frame, &config, &plan) == DECISION_RESULT_OK, message);
+    result = Decision_Solve(&frame, &config, &plan);
 
     centroid->x_mm = 0.0f;
     centroid->y_mm = 0.0f;
+    if (result != DECISION_RESULT_OK || plan.move_count == 0U) {
+        return result;
+    }
     for (index = 0U; index < plan.move_count; ++index) {
         centroid->x_mm += plan.moves[index].place.x_mm;
         centroid->y_mm += plan.moves[index].place.y_mm;
     }
-    if (plan.move_count != 0U) {
-        centroid->x_mm /= (float)plan.move_count;
-        centroid->y_mm /= (float)plan.move_count;
-    }
+    centroid->x_mm /= (float)plan.move_count;
+    centroid->y_mm /= (float)plan.move_count;
+    return result;
 }
 
-static void test_target_lands_in_the_other_half(void)
+/* Which half is which is not inferred any more: both ends of the link use the
+   vision end's A4 frame - landscape sheet, top-left origin, +X right, +Y down -
+   so the pick half is x < 148.5 and the place half is x > 148.5, full stop. Two
+   things follow, and this pins down both: the stated target is used exactly as
+   given rather than mirrored to wherever the pieces are not, and a frame whose
+   pieces are on the assembly side is refused outright instead of being solved
+   into a plan that assembles on top of them. */
+static void test_halves_are_fixed_by_the_shared_frame(void)
 {
     const float divider = DECISION_PAPER_DIVIDER_X_MM;
-    DecisionPoint near_column;
-    DecisionPoint far_column;
+    DecisionConfig config;
+    DecisionPoint centroid;
+    DecisionResult result;
+    char message[128];
 
-    /* build_frame scatters the pieces around x = 40..175, so they sit mostly
-       left of the divider; the stated target is on the right and must stay. */
-    solve_in_half(0.0f, divider + 60.0f, "pieces left, target right",
-                  &near_column);
-    check(near_column.x_mm > divider,
-          "pieces left: assembly did not stay in the right half");
+    Decision_GetDefaultConfig(&config);
+    check(config.target_center.x_mm > divider,
+          "default target: not in the place half");
 
-    /* Same stated target, pieces moved into the right half: the target has to be
-       mirrored to the left rather than laid on top of them. */
-    solve_in_half(120.0f, divider + 60.0f, "pieces right, target right",
-                  &far_column);
-    check(far_column.x_mm < divider,
-          "pieces right: assembly was not mirrored out of their half");
+    /* build_frame lays the pieces out in the pick half, so this is the nominal
+       case: it solves, and the assembly stays where the config asked for it. */
+    result = solve_shifted(0.0f, &centroid);
+    (void)snprintf(message, sizeof(message),
+                   "pieces in the pick half: expected OK, got %s",
+                   result_name(result));
+    check(result == DECISION_RESULT_OK, message);
+    check(centroid.x_mm > divider,
+          "pieces in the pick half: assembly did not stay in the place half");
+
+    /* Same pieces pushed across the midline. Nothing on the device can fix that,
+       so it has to come back as WRONG_HALF rather than as a plan or as one of
+       the geometry failures. */
+    result = solve_shifted(140.0f, &centroid);
+    (void)snprintf(message, sizeof(message),
+                   "pieces in the place half: expected WRONG_HALF, got %s",
+                   result_name(result));
+    check(result == DECISION_RESULT_WRONG_HALF, message);
 }
 
 int main(void)
@@ -412,7 +429,7 @@ int main(void)
     test_plan_places_pieces_apart(3.0f, "3 mm cutting error");
     test_rejects_degenerate_frame();
     test_slanted_pieces_are_handled();
-    test_target_lands_in_the_other_half();
+    test_halves_are_fixed_by_the_shared_frame();
 
     if (failures != 0) {
         printf("%d decision test(s) failed\n", failures);

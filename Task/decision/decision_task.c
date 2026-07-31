@@ -216,6 +216,12 @@ void Decision_App(void *argument)
                     if (route_output.phase == TRAJECTORY_PHASE_TRANSFER &&
                         route_output.state == TRAJECTORY_STATE_COMPLETE &&
                         route_output.active == 0U) {
+                        /* The route layer may add a shared wrist bias to keep the
+                           carried piece inside the servo travel. Preserve that
+                           actual final reference as the next move's empty-tool
+                           start instead of reverting to the solver's raw place
+                           yaw, which may be outside the wrist workspace. */
+                        current_pose = route_output.reference.pose;
                         output.execution_state = DECISION_EXECUTION_RELEASE_DWELL;
                         state_start_tick = now_tick;
                         publish_output(&output);
@@ -224,8 +230,6 @@ void Decision_App(void *argument)
                            DECISION_EXECUTION_RELEASE_DWELL) {
                     if (elapsed_milliseconds(state_start_tick, now_tick) >=
                         request.execution.release_dwell_ms) {
-                        current_pose = output.plan.moves[
-                            output.active_move_index].place;
                         ++output.active_move_index;
 
                         if (output.active_move_index >= output.plan.move_count) {

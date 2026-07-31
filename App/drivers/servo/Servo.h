@@ -38,6 +38,21 @@ extern "C" {
 #define SERVO_CENTER_ANGLE_DEG              90.0f
 
 /**
+ * Servo_Init() 写入的上电角，两个通道各自取值。
+ *
+ * 升降取行程上端 0°，而不是机械中位：实测连杆在 0° 时电磁铁中心在纸面以上
+ * 20 mm，是抬起到最高的姿态，角度越大反而越往下探。若这里给中位 90°，
+ * 电磁铁会低到纸面以下，上电瞬间就把连杆顶在纸上，随后吊臂还要摆动数秒。
+ * 末端 Yaw 没有这个约束，仍取中位。
+ *
+ * 升降的这个值必须与 Task/crane_control 的 lift_zero_angle_deg 及
+ * max_z_mm 换算出的上端角一致，否则上电会先跳一次。角度增大对应下降这一点，
+ * 由那边的 lift_direction_sign = -1 表达。
+ */
+#define SERVO_LIFT_INIT_ANGLE_DEG           SERVO_MIN_ANGLE_DEG
+#define SERVO_END_YAW_INIT_ANGLE_DEG        SERVO_CENTER_ANGLE_DEG
+
+/**
  * 舵机安装方向配置：1 表示最终 PWM 方向反转，0 表示正常方向。
  * 反转只作用于“软件机械角 -> CCR”换算，不改变上层保存的目标角、当前角和滤波逻辑，
  * 机械安装完成后可分别调整两个宏，不需要改上层角度定义。
@@ -114,7 +129,8 @@ typedef struct
 } Servo_State_t;
 
 /**
- * @brief 初始化两个 PWM 通道，并将逻辑角置于 90°，输出时自动叠加机械零位补偿。
+ * @brief 初始化两个 PWM 通道，各自置于 SERVO_*_INIT_ANGLE_DEG，
+ *        输出时自动叠加机械零位补偿。
  * @return HAL_OK 表示成功；HAL_ERROR 表示定时器或 PWM 通道启动失败。
  * @note 调用前必须已经执行 MX_TIM1_Init()。
  */

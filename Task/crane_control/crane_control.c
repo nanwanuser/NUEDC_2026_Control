@@ -39,13 +39,18 @@
 /* Tries per drive when zeroing at startup. Same reasoning as above, except that
    startup has no next tick to fall back on, so the retry has to happen here. */
 #define CRANE_ZERO_ATTEMPTS               3U
-/* Gap between homing-state polls. The seek takes seconds, so polling faster only
-   loads the bus. */
-#define CRANE_HOME_POLL_INTERVAL_MS       20U
-/* Per-axis homing budget. Generous, because it is spent once at reset and not
-   against the contest's two minutes, but bounded so a switch that never triggers
-   does not hang startup. */
-#define CRANE_HOME_TIMEOUT_MS             8000U
+/* How long startup holds both axes against their stops. Nothing reports arrival in
+   torque mode, so this is not a timeout to be beaten but the whole duration of the
+   datum move, and it has to cover the worst case: an axis starting from the far end
+   of its travel. Arriving early costs only the remainder spent resting against the
+   stop, which at CRANE_HOME_CURRENT_MA is a light load rather than a fight. */
+#define CRANE_HOME_PUSH_MS                3000U
+/* Startup budget for walking the lift servo up to its park height. The filter
+   needs a few ticks to converge and there is no feedback to wait on, so this is
+   simply long enough for the servo to have arrived before the boom starts
+   moving. The stroke covered here is the whole of it rather than half, so the
+   budget is longer than the one that only had to reach z = 0. */
+#define CRANE_LIFT_PARK_TIMEOUT_MS        900U
 
 typedef struct {
     int64_t position_units;
@@ -64,11 +69,11 @@ static CraneMotorPosition s_reach_position;
 static CraneLiftTriggerState s_lift_trigger;
 static uint8_t s_lift_command_pending;
 static uint8_t s_consecutive_bus_faults;
-/* Where each drive's zero sits in crane coordinates. Without limit switches the
-   only available datum is "wherever the mechanism was standing at reset", so this
-   holds the park pose and the mechanism has to actually be parked. Homing
-   replaces it with the switch position, which is the travel minimum, and from
-   then on the datum is a property of the frame rather than of the operator. */
+/* Where each drive's zero sits in crane coordinates. Without homing the only
+   available datum is "wherever the mechanism was standing at reset", so this holds
+   the park pose and the mechanism has to actually be parked. Homing replaces it
+   with the hard stop each axis was driven into, which is the travel minimum, and
+   from then on the datum is a property of the frame rather than of the operator. */
 static float s_yaw_datum_deg;
 static float s_reach_datum_mm;
 static volatile uint8_t s_output_pending;
@@ -139,9 +144,10 @@ static uint8_t config_ranges_are_valid(const CraneControlConfig *config)
                      config->reach_acceleration <= PD42S1_MAX_ACCELERATION &&
                      config->expect_stepper_response <= 1U &&
                      config->home_on_startup <= 1U &&
-                     config->home_speed_rpm <= PD42S1_MAX_SPEED_RPM &&
-                     config->home_limit_current_ma <=
-                         PD42S1_MAX_TORQUE_CURRENT_MA);
+                     config->home_torque_current_ma > 0U &&
+                     config->home_torque_current_ma <=
+                         PD42S1_MAX_TORQUE_CURRENT_MA &&
+                     config->home_push_ms > 0U);
 }
 static uint8_t config_is_valid(const CraneControlConfig *config)
 {
@@ -222,6 +228,14 @@ static void publish_state(CraneControlStatus status,
     taskEXIT_CRITICAL();
 }
 
+/* Servo angle that holds a given local height. Shared by the startup park move
+   and the running lift command so the two cannot drift apart. */
+static float lift_angle_for_z(float z_mm)
+{
+    return s_config.lift_zero_angle_deg +
+        (float)s_config.lift_direction_sign * z_mm / s_config.lift_mm_per_degree;
+}
+
 /* Maps one planner pose onto the boom, reach, and wrist axes. The lift is left
    alone here because it is driven by the sign of the z change, not by z. */
 static void transform_pose(const TrajectoryPose *pose,
@@ -253,9 +267,7 @@ static void transform_reference(const TrajectoryReference *reference,
     s_lift_command_pending = CraneLiftTrigger_Update(
         &s_lift_trigger, reference->pose.z_mm, s_config.min_z_mm,
         s_config.max_z_mm, &target->z_mm);
-    target->lift_servo_angle_deg = s_config.lift_zero_angle_deg +
-        (float)s_config.lift_direction_sign * target->z_mm /
-        s_config.lift_mm_per_degree;
+    target->lift_servo_angle_deg = lift_angle_for_z(target->z_mm);
     target->grip = reference->grip != 0U ? 1U : 0U;
 }
 
@@ -296,10 +308,11 @@ static uint8_t target_is_in_workspace(const CraneActuatorTarget *target)
    manual notes that repeating one produces no motion - so a dropped frame costs
    at most the 20 ms until the next tick restates the same target.
  *
- * The drive's own zero is established once at startup by CRANE_COMMAND_CLEAR
- * (0xF8), which is what makes its absolute frame and this one the same frame.
- * That still assumes the mechanism is left where it was, which is why a real
- * datum needs the limit switch; see CraneControl_Home(). */
+ * The drive's own zero is established by clearing its position counter (0xF8),
+ * which is what makes its absolute frame and this one the same frame. Done at
+ * startup alone that still assumes the mechanism was left where it was, which is
+ * why the real datum comes from homing into the hard stops and clearing there;
+ * see CraneControl_Home(). */
 static uint8_t revolutions_to_position(float revolutions,
                                        CraneMotorPosition *position)
 {
@@ -446,17 +459,60 @@ static CraneControlStatus command_axis(uint8_t motor_id,
     return status;
 }
 
-/* Defines the drive's zero as wherever the mechanism is standing at reset, which
-   is what makes the drives' absolute frame and this controller's the same frame.
-   It replaces a startup move that swung the boom to startup_boom_yaw_deg from an
-   assumed zero: nothing had ever datumed the drive, so that assumption was only
-   true if the boom happened to be sitting at yaw zero, and if it was not, the
-   whole run was offset by however far out it was.
+/* Sends one of the drive's no-payload commands and waits for it to be accepted.
  *
- * So the boom now has to be parked at startup_boom_yaw_deg with the reach at its
- * zero radius before reset, and CraneControl_Home() is what removes that
- * requirement once the limit switches are fitted. */
-static CraneControlStatus establish_axis_zero(void)
+ * They are all idempotent, so a lost reply is worth retrying rather than
+ * reporting: startup has no next tick to restate anything on, and the calls that
+ * use this are the ones that decide what frame the run is measured in. */
+static CraneControlStatus send_simple_command(uint8_t motor_id,
+                                              pd42s1_command_t command)
+{
+    CraneControlStatus worst = CRANE_CONTROL_OK;
+    uint8_t attempt;
+
+    for (attempt = 0U; attempt < CRANE_ZERO_ATTEMPTS; ++attempt) {
+        pd42s1_result_t result;
+        max485_status_t status;
+
+        switch (command) {
+        case PD42S1_COMMAND_CLEAR_POSITION:
+            status = pd42s1_clear_position(motor_id);
+            break;
+        case PD42S1_COMMAND_RELEASE_STALL_PROTECTION:
+            status = pd42s1_release_stall_protection(motor_id);
+            break;
+        case PD42S1_COMMAND_CLEAR_STATE:
+            status = pd42s1_clear_state(motor_id);
+            break;
+        default:
+            return CRANE_CONTROL_INVALID_CONFIG;
+        }
+        if (status != MAX485_STATUS_OK) {
+            worst = CRANE_CONTROL_TRANSPORT_ERROR;
+            continue;
+        }
+        if (s_config.expect_stepper_response == 0U) {
+            return CRANE_CONTROL_OK;
+        }
+        status = pd42s1_receive_response(motor_id, command, &result,
+                                        PD42S1_UART_TIMEOUT_MS);
+        if (status != MAX485_STATUS_OK) {
+            worst = CRANE_CONTROL_TRANSPORT_ERROR;
+            continue;
+        }
+        if (result != PD42S1_RESULT_SUCCESS) {
+            worst = CRANE_CONTROL_DRIVE_REJECTED;
+            continue;
+        }
+        return CRANE_CONTROL_OK;
+    }
+    return worst;
+}
+
+/* Makes both drives read zero where the mechanism is standing right now, and
+   adopts that as the software position too. Whoever calls this owns the question
+   of what pose "here" actually is. */
+static CraneControlStatus clear_axis_positions(void)
 {
     static const uint8_t motor_ids[2] = {
         PD42S1_MOTOR_1_ID, PD42S1_MOTOR_2_ID
@@ -465,43 +521,93 @@ static CraneControlStatus establish_axis_zero(void)
     uint8_t index;
 
     for (index = 0U; index < 2U; ++index) {
-        uint8_t attempt;
+        CraneControlStatus status =
+            send_simple_command(motor_ids[index],
+                                PD42S1_COMMAND_CLEAR_POSITION);
 
-        /* One lost reply is not a dead drive, and the clear is idempotent, so
-           retry before concluding anything about this axis. */
-        for (attempt = 0U; attempt < CRANE_ZERO_ATTEMPTS; ++attempt) {
-            pd42s1_result_t result;
-            max485_status_t status = pd42s1_clear_position(motor_ids[index]);
-
-            if (status != MAX485_STATUS_OK) {
-                worst = CRANE_CONTROL_TRANSPORT_ERROR;
-                continue;
-            }
-            if (s_config.expect_stepper_response == 0U) {
-                break;
-            }
-            status = pd42s1_receive_response(motor_ids[index],
-                                            PD42S1_COMMAND_CLEAR_POSITION,
-                                            &result, PD42S1_UART_TIMEOUT_MS);
-            if (status != MAX485_STATUS_OK) {
-                worst = CRANE_CONTROL_TRANSPORT_ERROR;
-                continue;
-            }
-            if (result != PD42S1_RESULT_SUCCESS) {
-                worst = CRANE_CONTROL_DRIVE_REJECTED;
-                continue;
-            }
-            break;
+        if (status != CRANE_CONTROL_OK) {
+            worst = status;
         }
     }
-    /* Both drives now read zero, and zero is the pose the mechanism is standing
-       in, which without switches has to be taken to be the park pose. */
-    s_yaw_datum_deg = s_config.startup_boom_yaw_deg;
-    s_reach_datum_mm = s_config.reach_zero_radius_mm;
     s_yaw_position.position_units = 0;
     s_yaw_position.valid = 1U;
     s_reach_position.position_units = 0;
     s_reach_position.valid = 1U;
+    return worst;
+}
+
+/* Commands both axes to stay exactly where they are, as a position move.
+ *
+ * Absolute position zero, sent straight after the counters were cleared, names the
+ * position each drive is already reading - and the manual notes that an absolute
+ * target already reached produces no motion. So this changes the working mode
+ * without moving the mechanism, and it changes it to the same mode the control loop
+ * uses (see send_motor_command()) rather than to a second one the first tick would
+ * then have to switch out of. Speed and acceleration still have to be legal values
+ * even though nothing travels.
+ *
+ * Depends on running after clear_axis_positions(): absolute zero is only the current
+ * position because the counters were just zeroed there. */
+static CraneControlStatus hold_axis_positions(void)
+{
+    static const uint8_t motor_ids[2] = {
+        PD42S1_MOTOR_1_ID, PD42S1_MOTOR_2_ID
+    };
+    CraneControlStatus worst = CRANE_CONTROL_OK;
+    uint8_t index;
+
+    for (index = 0U; index < 2U; ++index) {
+        const uint8_t motor_id = motor_ids[index];
+        const uint16_t speed_rpm = motor_id == PD42S1_MOTOR_1_ID
+                                       ? s_config.yaw_speed_rpm
+                                       : s_config.reach_speed_rpm;
+        const uint8_t acceleration = motor_id == PD42S1_MOTOR_1_ID
+                                         ? s_config.yaw_acceleration
+                                         : s_config.reach_acceleration;
+        CraneControlStatus status = CRANE_CONTROL_OK;
+        max485_status_t bus_status =
+            pd42s1_move_absolute(motor_id, PD42S1_DIRECTION_FORWARD,
+                                 acceleration, speed_rpm, 0U);
+
+        if (bus_status != MAX485_STATUS_OK) {
+            status = CRANE_CONTROL_TRANSPORT_ERROR;
+        } else if (s_config.expect_stepper_response != 0U) {
+            pd42s1_result_t result;
+
+            bus_status = pd42s1_receive_response(
+                motor_id, PD42S1_COMMAND_ABSOLUTE_POSITION, &result,
+                PD42S1_UART_TIMEOUT_MS);
+            if (bus_status != MAX485_STATUS_OK) {
+                status = CRANE_CONTROL_TRANSPORT_ERROR;
+            } else if (result != PD42S1_RESULT_SUCCESS) {
+                status = CRANE_CONTROL_DRIVE_REJECTED;
+            }
+        }
+        if (status != CRANE_CONTROL_OK) {
+            worst = status;
+        }
+    }
+    return worst;
+}
+
+/* Defines the drive's zero as wherever the mechanism is standing at reset, which
+   is what makes the drives' absolute frame and this controller's the same frame.
+   It replaces a startup move that swung the boom to startup_boom_yaw_deg from an
+   assumed zero: nothing had ever datumed the drive, so that assumption was only
+   true if the boom happened to be sitting at yaw zero, and if it was not, the
+   whole run was offset by however far out it was.
+ *
+ * So the boom has to be parked at startup_boom_yaw_deg with the reach at its zero
+ * radius before reset, which is the requirement CraneControl_Home() removes. This
+ * is the fallback for when homing is switched off or did not finish. */
+static CraneControlStatus establish_axis_zero(void)
+{
+    const CraneControlStatus worst = clear_axis_positions();
+
+    /* Both drives now read zero, and zero is the pose the mechanism is standing
+       in, which without switches has to be taken to be the park pose. */
+    s_yaw_datum_deg = s_config.startup_boom_yaw_deg;
+    s_reach_datum_mm = s_config.reach_zero_radius_mm;
     /* Reported so a caller can beep about a quiet drive, but not a veto: see
        CraneControl_Init(). */
     return worst;
@@ -521,7 +627,7 @@ static CraneControlStatus apply_output(const RoutePlanningOutput *output)
         return CRANE_CONTROL_OUT_OF_WORKSPACE;
     }
     /* Both axes are measured from wherever the drive's zero was established -
-       the park pose at reset, or the limit switch after homing. */
+       the park pose at reset, or the hard stop after homing. */
     yaw_revolutions = (float)s_config.yaw_direction_sign *
         (target.boom_yaw_deg - s_yaw_datum_deg) *
         s_config.yaw_motor_revolutions_per_crane_revolution / 360.0f;
@@ -570,6 +676,39 @@ static uint8_t take_pending_output(RoutePlanningOutput *output)
     taskEXIT_CRITICAL();
     return pending;
 }
+/* Puts the lift at the top of its stroke, which is where the mechanism is parked
+   and the height the lift trigger's first upward event would snap to anyway, so
+   the first plan does not begin with a stroke.
+ *
+ * With SERVO_LIFT_INIT_ANGLE_DEG matching the angle max_z_mm maps to, Servo_Init()
+ * already leaves the servo there and this only confirms it. It is kept because the
+ * agreement between those two is a calibration coincidence, not something the code
+ * enforces: the servo driver knows servo travel, this module knows where the sheet
+ * is, and only this one converts. Should they ever diverge, the correction happens
+ * here, before any drive is touched, rather than seconds later - the servo moves
+ * only when Servo_Update() runs, and the first of the task's own ticks is a whole
+ * startup push away, which the magnet would spend below the sheet with the boom
+ * swinging over it. That is why the ticks are run here. */
+static CraneControlStatus park_lift(void)
+{
+    const uint32_t start_tick = HAL_GetTick();
+
+    if (Servo_SetAngle(SERVO_LIFT,
+                       lift_angle_for_z(s_config.max_z_mm)) != HAL_OK) {
+        return CRANE_CONTROL_SERVO_ERROR;
+    }
+    while (Servo_IsAtTarget(SERVO_LIFT) == 0U) {
+        if (HAL_GetTick() - start_tick >= CRANE_LIFT_PARK_TIMEOUT_MS) {
+            /* Not an error: the command stands and the task's own ticks will
+               finish the move. Startup just stops waiting on it. */
+            break;
+        }
+        HAL_Delay(CRANE_TICK_PERIOD_MS);
+        Servo_Update();
+    }
+    return CRANE_CONTROL_OK;
+}
+
 CraneControlStatus CraneControl_Init(const CraneControlConfig *config)
 {
     CraneControlConfig default_config;
@@ -587,17 +726,22 @@ CraneControlStatus CraneControl_Init(const CraneControlConfig *config)
     (void)memset(&s_state, 0, sizeof(s_state));
     (void)memset(&s_yaw_position, 0, sizeof(s_yaw_position));
     (void)memset(&s_reach_position, 0, sizeof(s_reach_position));
-    CraneLiftTrigger_Init(&s_lift_trigger, 0.0f);
+    /* Seeded at the park height so the trigger agrees with where park_lift() puts
+       the servo; otherwise its first sample would call the lift low and the first
+       upward leg of a plan would look like a height it was already at. */
+    CraneLiftTrigger_Init(&s_lift_trigger, s_config.max_z_mm);
     s_lift_command_pending = 0U;
     s_output_pending = 0U;
     s_consecutive_bus_faults = 0U;
     s_state.status = CRANE_CONTROL_OK;
     s_state.target.boom_yaw_deg = s_config.startup_boom_yaw_deg;
-    s_state.target.lift_servo_angle_deg = s_config.lift_zero_angle_deg;
+    s_state.target.z_mm = s_config.max_z_mm;
+    s_state.target.lift_servo_angle_deg = lift_angle_for_z(s_config.max_z_mm);
     s_state.target.end_yaw_servo_angle_deg =
         s_config.end_yaw_center_angle_deg;
     /* Startup parks the boom at startup_boom_yaw_deg with the reach at its zero
-       radius, so that is the pose a first plan has to start from. */
+       radius and the lift at the top of its stroke, so that is the pose a first
+       plan has to start from. */
     s_state.target.radius_mm = s_config.reach_zero_radius_mm;
     pose_from_axes(s_config.startup_boom_yaw_deg,
                    s_config.reach_zero_radius_mm,
@@ -609,6 +753,12 @@ CraneControlStatus CraneControl_Init(const CraneControlConfig *config)
     CraneControl_SetMagnet(0U);
     pd42s1_init();
     if (Servo_Init() != HAL_OK) {
+        s_state.status = CRANE_CONTROL_SERVO_ERROR;
+        return s_state.status;
+    }
+    /* Restate the top of the stroke as an angle, so the lift is at the park height
+       before any drive moves - see park_lift(). */
+    if (park_lift() != CRANE_CONTROL_OK) {
         s_state.status = CRANE_CONTROL_SERVO_ERROR;
         return s_state.status;
     }
@@ -625,81 +775,99 @@ CraneControlStatus CraneControl_Init(const CraneControlConfig *config)
        left there would fail the first run before the arm had moved. A bus that is
        really dead still shows up as consecutive faults once the run starts. */
     (void)establish_axis_zero();
-    /* Replaces the assumed datum with a measured one where the switches allow it.
-       A homing failure is not fatal either, for the same reason. */
-    if (CraneControl_Home(CRANE_HOME_TIMEOUT_MS) != CRANE_CONTROL_OK) {
+    /* Replaces the assumed datum with a measured one. A failure here is not fatal
+       either, for the same reason: the assumed park pose is still a datum, just one
+       that trusts the operator. */
+    if (CraneControl_Home(CRANE_HOME_PUSH_MS) != CRANE_CONTROL_OK) {
         (void)establish_axis_zero();
     }
+    /* The push left both axes resting where they stopped and clear_axis_positions()
+       named that zero, so the position both drives hold is already the one this
+       controller wants them at. Restating it as an absolute zero is what makes the
+       first tick of the control loop a no-op instead of a move: s_yaw_position and
+       s_reach_position both read zero, so the first planner sample that lands on the
+       datum pose changes nothing, and one that does not is a move from a position
+       the drive really is at. */
     s_state.initialized = 1U;
     return CRANE_CONTROL_OK;
 }
 
-/* Seeks one axis's origin and waits for the drive to say what happened.
+/* Holds a steady current towards one axis's stop, without asking for a position.
  *
- * The drive does the whole search itself, so this only has to state the terms and
- * poll. Both axes end at their minimum - the boom against its switch, the reach
- * fully drawn in - so both seek in reverse; what differs is how the end is
- * detected, which is the mode the caller passes. Nearest keeps the mechanism from
- * taking a whole extra revolution to find an origin it is already sitting on.
+ * Torque mode is the whole point: 0xF0 names a direction and a current and nothing
+ * else, so the axis pulls until something stops it and then simply sits there
+ * loaded. There is no target to reach, so there is nothing for the drive to
+ * overshoot, retreat from, or report as failed - which is what the drive's own
+ * homing kept doing.
  *
- * Per the manual the limit current only does anything in the switchless modes,
- * where the end is found by the motor stalling against it, so it is set either
- * way and simply ignored on the axis that has a switch. */
-static CraneControlStatus home_axis(uint8_t motor_id,
-                                    pd42s1_home_mode_t mode,
-                                    uint32_t timeout_ms)
+ * The current has to be low enough to be a push rather than a fight, because the
+ * axis spends the rest of the push against the frame. It also has to stay under the
+ * drive's stall current (1500 mA out of the box) so this does not latch the stall
+ * protection it used to have to clear. */
+static CraneControlStatus send_torque(uint8_t motor_id,
+                                      pd42s1_direction_t direction,
+                                      uint16_t current_ma)
 {
-    const uint32_t start_tick = HAL_GetTick();
+    pd42s1_result_t result;
+    max485_status_t status = pd42s1_set_torque(motor_id, direction, current_ma);
 
-    if (pd42s1_set_home_parameters(motor_id, mode,
-                                   PD42S1_DIRECTION_REVERSE,
-                                   s_config.home_speed_rpm,
-                                   s_config.home_limit_current_ma) !=
-        MAX485_STATUS_OK) {
+    if (status != MAX485_STATUS_OK) {
         return CRANE_CONTROL_TRANSPORT_ERROR;
     }
-    if (pd42s1_receive_home_reply(motor_id,
-                                  PD42S1_COMMAND_SET_HOME_PARAMETERS,
-                                  PD42S1_UART_TIMEOUT_MS) !=
-        MAX485_STATUS_OK) {
-        return CRANE_CONTROL_DRIVE_REJECTED;
+    if (s_config.expect_stepper_response == 0U) {
+        return CRANE_CONTROL_OK;
     }
-    if (pd42s1_trigger_home(motor_id, PD42S1_HOME_TRIGGER_NEAREST) !=
-        MAX485_STATUS_OK) {
+    status = pd42s1_receive_response(motor_id, PD42S1_COMMAND_TORQUE, &result,
+                                     PD42S1_UART_TIMEOUT_MS);
+    if (status != MAX485_STATUS_OK) {
         return CRANE_CONTROL_TRANSPORT_ERROR;
     }
-    if (pd42s1_receive_home_reply(motor_id, PD42S1_COMMAND_TRIGGER_HOME,
-                                  PD42S1_UART_TIMEOUT_MS) !=
-        MAX485_STATUS_OK) {
-        return CRANE_CONTROL_DRIVE_REJECTED;
-    }
-
-    for (;;) {
-        pd42s1_home_state_t home_state;
-
-        if (HAL_GetTick() - start_tick >= timeout_ms) {
-            (void)pd42s1_abort_home(motor_id);
-            return CRANE_CONTROL_DRIVE_REJECTED;
-        }
-        /* A poll that does not get through is not a failed home: the seek is
-           still running, so try again rather than giving up on the axis. */
-        if (pd42s1_read_home_state(motor_id, &home_state,
-                                   PD42S1_UART_TIMEOUT_MS) ==
-            MAX485_STATUS_OK) {
-            if (home_state == PD42S1_HOME_STATE_COMPLETE) {
-                return CRANE_CONTROL_OK;
-            }
-            if (home_state == PD42S1_HOME_STATE_NOT_FOUND) {
-                return CRANE_CONTROL_DRIVE_REJECTED;
-            }
-        }
-        HAL_Delay(CRANE_HOME_POLL_INTERVAL_MS);
-    }
+    return result == PD42S1_RESULT_SUCCESS ? CRANE_CONTROL_OK
+                                          : CRANE_CONTROL_DRIVE_REJECTED;
 }
 
-CraneControlStatus CraneControl_Home(uint32_t timeout_ms)
+static CraneControlStatus push_axis(uint8_t motor_id,
+                                    pd42s1_direction_t direction)
+{
+    /* Anything the previous run latched - a stall, a brake, a disable - would keep
+       the push from moving the axis at all, and unlike a homing seek there is no
+       state to read back that would say so. Its own outcome is not decisive: on a
+       drive with nothing latched it is a no-op. */
+    (void)send_simple_command(motor_id, PD42S1_COMMAND_CLEAR_STATE);
+    return send_torque(motor_id, direction, s_config.home_torque_current_ma);
+}
+
+/* Ends the push and leaves the axis holding where it stopped.
+ *
+ * Torque mode does not end by itself: a drive left in it keeps pulling. Zero
+ * current stops the pull, and clearing the state afterwards covers anything the
+ * push latched. Neither is allowed to be skipped on the way to reporting an error,
+ * so this takes the status so far and returns the worse of the two. */
+static CraneControlStatus release_axis(uint8_t motor_id,
+                                       CraneControlStatus so_far)
+{
+    /* Direction is irrelevant at zero current; forward is simply the valid one. */
+    CraneControlStatus status = send_torque(motor_id,
+                                            PD42S1_DIRECTION_FORWARD, 0U);
+
+    if (so_far != CRANE_CONTROL_OK) {
+        status = so_far;
+    }
+    {
+        const CraneControlStatus cleared =
+            send_simple_command(motor_id, PD42S1_COMMAND_CLEAR_STATE);
+
+        if (status == CRANE_CONTROL_OK) {
+            status = cleared;
+        }
+    }
+    return status;
+}
+
+CraneControlStatus CraneControl_Home(uint32_t push_ms)
 {
     CraneControlStatus status;
+    CraneControlStatus reach_status;
 
     if (s_config_loaded == 0U) {
         return CRANE_CONTROL_NOT_INITIALIZED;
@@ -707,33 +875,90 @@ CraneControlStatus CraneControl_Home(uint32_t timeout_ms)
     if (s_config.home_on_startup == 0U) {
         return CRANE_CONTROL_OK;
     }
-    /* The boom has a limit switch on its rotation, so it homes against the switch
-       signal. The reach has no switch, only the hard end it reaches when fully
-       drawn in, so it homes switchless and the drive detects the end by the motor
-       loading up against it - that is what home_limit_current_ma sets. Doing the
-       boom first means the reach draws in with the boom already at a known
-       heading. */
-    status = home_axis(PD42S1_MOTOR_1_ID, PD42S1_HOME_MODE_LEFT_LIMIT,
-                       timeout_ms);
+    if (push_ms == 0U) {
+        push_ms = s_config.home_push_ms;
+    }
+    /* Both axes are pushed at the same time, and the push is all there is: no seek,
+       no target, no state to poll. The drive's own switchless homing is not used at
+       all any more, because two of its properties could not be worked around from
+       here. It travels to its configured origin position after finding the stop,
+       which is what made the reach spring back out; and its outcome only arrives as
+       a state code, which stayed silent for the boom no matter what this code did
+       about the origin position or the timeout. Torque mode has neither problem -
+       it is a direction and a current, so the axis pulls until the mechanism stops
+       it, and then rests there.
+     *
+     * Pushing both at once is safe here in a way that a simultaneous *seek* would
+     * not have been. The reach only ever moves inwards, so the arm's radius only
+     * shrinks for the whole push, and the boom's stop is at a fixed angle it can
+     * reach from anywhere in its arc. Nothing about the boom's rotation depends on
+     * how far the reach has got, so the ordering that mattered for homing - reach
+     * first, so the boom never sweeps an extended arm - is satisfied by the reach
+     * being inbound the entire time rather than by waiting for it to arrive.
+     *
+     * REVERSE draws the reach in and drives the boom into its measured +90 deg
+     * stop. The yaw datum below must name that same physical end; assigning the
+     * opposite end makes the first task command continue towards the stop instead
+     * of leaving it. */
+    status = push_axis(PD42S1_MOTOR_2_ID, PD42S1_DIRECTION_REVERSE);
+    reach_status = status;
+    {
+        const CraneControlStatus yaw_status =
+            push_axis(PD42S1_MOTOR_1_ID, PD42S1_DIRECTION_REVERSE);
+
+        if (status == CRANE_CONTROL_OK) {
+            status = yaw_status;
+        }
+    }
+    /* Held for the whole budget rather than until something says it has arrived,
+       because in torque mode nothing does. The wait therefore has to cover the worst
+       case, which is an axis starting from the far end of its travel; arriving early
+       just means resting against the stop for the remainder. */
+    HAL_Delay(push_ms);
+    /* Both drives have to come out of torque mode whatever happened, or they keep
+       pulling into their stops for the rest of the run. So this is not conditional on
+       the pushes having worked, and the reach is released first: the arm is drawn in,
+       and that is the axis that must not be left loaded against the frame. */
+    reach_status = release_axis(PD42S1_MOTOR_2_ID, reach_status);
+    status = release_axis(PD42S1_MOTOR_1_ID, status);
+    if (reach_status != CRANE_CONTROL_OK) {
+        status = reach_status;
+    }
     if (status != CRANE_CONTROL_OK) {
         return status;
     }
-    status = home_axis(PD42S1_MOTOR_2_ID, PD42S1_HOME_MODE_LEFT_NO_LIMIT,
-                       timeout_ms);
+    /* The push moved the mechanism, so the drives' counters no longer read what they
+       did when startup cleared them. Clearing them here is what puts the stop at
+       position zero in the drives' own frame, and it has to happen after the push
+       rather than before it: software calls the stop zero, so if the drives were
+       only cleared at the power-up position the two frames would differ by the whole
+       push, and every absolute target afterwards would name somewhere the mechanism
+       had already passed. An absolute target the drive believes it is already at
+       produces no motion, which is exactly how a reach that never comes back in
+       looks from outside. */
+    status = clear_axis_positions();
     if (status != CRANE_CONTROL_OK) {
         return status;
     }
-    /* Homing left each drive reading zero at its own end, not at the park pose, so
-       the datum moves there: the boom's minimum yaw and the reach fully drawn in.
-       Every target is referenced to that from here on, which is what makes the
-       arm's idea of where it is independent of where it was left. */
+    /* Puts both drives into the mode the run uses, without moving them. The drive's
+       working mode follows whichever motion command it was last given, so after the
+       push both are in torque mode. Absolute position zero leaves it: the counters
+       were just cleared, so zero is the position each drive is already at, and an
+       absolute target already reached produces no motion. Doing it here rather than
+       letting the control loop's first target do it means the mode change happens
+       while the arm is known to be at its stops, not part-way into a plan. */
+    status = hold_axis_positions();
+    if (status != CRANE_CONTROL_OK) {
+        return status;
+    }
+    /* Both drives now read zero at their stop, so the datum is what pose the stops
+       are: the reach fully drawn in, and the boom at the maximum-yaw end reached by
+       the REVERSE torque command. With yaw_direction_sign = -1, targets below this
+       angle become positive/FORWARD drive positions and therefore leave the
+       REVERSE stop. */
     taskENTER_CRITICAL();
-    s_yaw_datum_deg = s_config.min_boom_yaw_deg;
+    s_yaw_datum_deg = s_config.max_boom_yaw_deg;
     s_reach_datum_mm = s_config.min_radius_mm;
-    s_yaw_position.position_units = 0;
-    s_yaw_position.valid = 1U;
-    s_reach_position.position_units = 0;
-    s_reach_position.valid = 1U;
     /* The mechanism is at its end stops, so that is the pose to report and the one
        a first plan has to start from. */
     s_state.target.boom_yaw_deg = s_yaw_datum_deg;
@@ -841,10 +1066,12 @@ void CraneControl_GetCurrentPose(TrajectoryPose *pose)
     }
     taskENTER_CRITICAL();
     if (s_state.initialized == 0U) {
-        /* Not started yet, so report the pose startup will park at. */
+        /* Not started yet, so report the pose startup will park at, lift included:
+           a first plan that began at z = 0 would order a stroke the mechanism is
+           not at, and the trigger would read it as a descent. */
         ensure_config();
         pose_from_axes(s_config.startup_boom_yaw_deg,
-                       s_config.reach_zero_radius_mm, 0.0f, pose);
+                       s_config.reach_zero_radius_mm, s_config.max_z_mm, pose);
     } else {
         *pose = s_last_pose;
     }

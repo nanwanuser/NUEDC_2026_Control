@@ -24,6 +24,7 @@ typedef enum {
 } pd42s1_direction_t;
 
 typedef enum {
+    PD42S1_COMMAND_SET_LEFT_LIMIT_ORIGIN = 0x90,
     PD42S1_COMMAND_SET_HOME_PARAMETERS = 0x91,
     PD42S1_COMMAND_TRIGGER_HOME = 0x92,
     PD42S1_COMMAND_ABORT_HOME = 0x93,
@@ -32,6 +33,8 @@ typedef enum {
     PD42S1_COMMAND_ABSOLUTE_POSITION = 0xF2,
     PD42S1_COMMAND_RELATIVE_POSITION = 0xF3,
     PD42S1_COMMAND_CLEAR_POSITION = 0xF8,
+    PD42S1_COMMAND_RELEASE_STALL_PROTECTION = 0xF9,
+    PD42S1_COMMAND_CLEAR_STATE = 0xFB,
 } pd42s1_command_t;
 
 /* Which end the drive seeks and whether a switch marks it. The two "no limit"
@@ -122,6 +125,35 @@ max485_status_t pd42s1_move_relative(uint8_t motor_id,
  * @note The command has no payload. Receive its response before another send.
  */
 max485_status_t pd42s1_clear_position(uint8_t motor_id);
+
+/**
+ * @brief Release the stall protection a jammed motor latched (0xF9).
+ * @note The drive refuses to move while the protection stands, so this has to be
+ *       sent after anything that stalls the motor on purpose - which on this
+ *       mechanism is the switchless homing seek. No payload; receive its response
+ *       before another send.
+ */
+max485_status_t pd42s1_release_stall_protection(uint8_t motor_id);
+
+/**
+ * @brief Clear the drive's latched stall, brake, and disable state (0xFB).
+ * @note The manual warns that a motor left braked gets seriously hot, so this is
+ *       the command that has to follow a stop as well as a stall. No payload.
+ */
+max485_status_t pd42s1_clear_state(uint8_t motor_id);
+
+/**
+ * @brief Set the position the drive adopts once it finds the left origin (0x90).
+ * @param position_units Signed position, 51200 units per revolution.
+ * @note This is what makes an axis retreat after reaching its stop: the drive
+ *       finds the end, then travels to whatever position this names. The factory
+ *       value is 51200 - one whole revolution off the stop - so it has to be set
+ *       to zero for the stop itself to be the origin. Persisted by the drive.
+ *       Its reply echoes the position, so consume it with
+ *       pd42s1_receive_home_reply().
+ */
+max485_status_t pd42s1_set_left_limit_origin(uint8_t motor_id,
+                                          int32_t position_units);
 
 /**
  * @brief Set how the drive looks for its origin (0x91).

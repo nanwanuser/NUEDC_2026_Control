@@ -60,6 +60,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Task/crane_control/crane_control_task.c
     Task/decision/decision_task.c
     Task/mission/mission.c
+    Task/route_planning/route_yaw_bias.c
     Task/route_planning/route_planning.c
 )
 

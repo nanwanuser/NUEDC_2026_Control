@@ -110,9 +110,12 @@ void HAL_UART_MspInit(UART_HandleTypeDef* uartHandle)
     GPIO_InitStruct.Alternate = GPIO_AF7_USART1;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /* USER CODE BEGIN USART1_MspInit 1 */
+    /* USART1 interrupt Init */
     HAL_NVIC_SetPriority(USART1_IRQn, 5, 0);
     HAL_NVIC_EnableIRQ(USART1_IRQn);
+  /* USER CODE BEGIN USART1_MspInit 1 */
+    /* NVIC 现在由 CubeMX 在上面配置，参数与这里原本手工写的完全一致，
+       所以手工那份删掉即可。 */
   /* USER CODE END USART1_MspInit 1 */
   }
   else if(uartHandle->Instance==USART2)
@@ -135,9 +138,11 @@ void HAL_UART_MspInit(UART_HandleTypeDef* uartHandle)
     GPIO_InitStruct.Alternate = GPIO_AF7_USART2;
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  /* USER CODE BEGIN USART2_MspInit 1 */
+    /* USART2 interrupt Init */
     HAL_NVIC_SetPriority(USART2_IRQn, 5, 0);
     HAL_NVIC_EnableIRQ(USART2_IRQn);
+  /* USER CODE BEGIN USART2_MspInit 1 */
+    /* 同 USART1：NVIC 已由 CubeMX 配置。 */
   /* USER CODE END USART2_MspInit 1 */
   }
 }
@@ -159,8 +164,10 @@ void HAL_UART_MspDeInit(UART_HandleTypeDef* uartHandle)
     */
     HAL_GPIO_DeInit(GPIOB, GPIO_PIN_6|GPIO_PIN_7);
 
-  /* USER CODE BEGIN USART1_MspDeInit 1 */
+    /* USART1 interrupt Deinit */
     HAL_NVIC_DisableIRQ(USART1_IRQn);
+  /* USER CODE BEGIN USART1_MspDeInit 1 */
+    /* NVIC 现在由 CubeMX 在上面关闭。 */
   /* USER CODE END USART1_MspDeInit 1 */
   }
   else if(uartHandle->Instance==USART2)
@@ -177,8 +184,10 @@ void HAL_UART_MspDeInit(UART_HandleTypeDef* uartHandle)
     */
     HAL_GPIO_DeInit(GPIOA, RS_TX_Pin|RS_RX_Pin);
 
-  /* USER CODE BEGIN USART2_MspDeInit 1 */
+    /* USART2 interrupt Deinit */
     HAL_NVIC_DisableIRQ(USART2_IRQn);
+  /* USER CODE BEGIN USART2_MspDeInit 1 */
+    /* 同 USART1：NVIC 已由 CubeMX 关闭。 */
   /* USER CODE END USART2_MspDeInit 1 */
   }
 }
@@ -186,3 +195,4 @@ void HAL_UART_MspDeInit(UART_HandleTypeDef* uartHandle)
 /* USER CODE BEGIN 1 */
 
 /* USER CODE END 1 */
+

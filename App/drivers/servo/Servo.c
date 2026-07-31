@@ -244,14 +244,19 @@ static void Servo_UpdateOne(Servo_Id_t servo_id)
 
 HAL_StatusTypeDef Servo_Init(void)
 {
+    static const float init_angle_deg[SERVO_COUNT] = {
+        SERVO_LIFT_INIT_ANGLE_DEG,      /* SERVO_LIFT */
+        SERVO_END_YAW_INIT_ANGLE_DEG,   /* SERVO_END_YAW */
+    };
     uint32_t index;
 
     for (index = 0U; index < SERVO_COUNT; ++index) {
         Servo_Id_t servo_id = (Servo_Id_t)index;
+        const float angle_deg = init_angle_deg[index];
 
-        /* 先写中心比较值，再启动 PWM，避免启动瞬间输出旧的 0° 脉宽。 */
-        Servo_ResetState(servo_id, SERVO_CENTER_ANGLE_DEG);
-        Servo_WriteAngle(servo_id, SERVO_CENTER_ANGLE_DEG);
+        /* 先写上电比较值，再启动 PWM，避免启动瞬间输出旧的 0° 脉宽。 */
+        Servo_ResetState(servo_id, angle_deg);
+        Servo_WriteAngle(servo_id, angle_deg);
 
         if (Servo_StartPwm(servo_id) != HAL_OK) {
             return HAL_ERROR;

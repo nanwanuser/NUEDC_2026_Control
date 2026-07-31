@@ -26,8 +26,14 @@ if (Servo_Init() != HAL_OK) {
 }
 ```
 
-初始化后两个通道均输出逻辑中心角 90°。设置目标后，以固定 5~10 ms 周期调用
-`Servo_Update()`，驱动会依次执行一阶低通、卡尔曼滤波、0.1°量化和 CCR 更新。
+初始化后两个通道各自输出 `SERVO_LIFT_INIT_ANGLE_DEG` 和
+`SERVO_END_YAW_INIT_ANGLE_DEG`：升降取行程上端 `0°`，此时电磁铁中心在纸面
+以上 `40 mm`，角度增大对应下降；末端 Yaw 取中心角 `90°`。升降不用中位，是因为
+连杆在 `90°` 时电磁铁已经低于纸面，上电瞬间就会顶在纸上。升降的这个值必须与
+`Task/crane_control` 的 `lift_zero_angle_deg`、`max_z_mm` 换算出的上端角一致。
+
+设置目标后，以固定 5~10 ms 周期调用 `Servo_Update()`，驱动会依次执行一阶低通、
+卡尔曼滤波、0.1°量化和 CCR 更新。
 
 ```c
 Servo_SetAngle(SERVO_LIFT, 120.0f);

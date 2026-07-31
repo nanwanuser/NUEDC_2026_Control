@@ -14,7 +14,7 @@ extern "C" {
 typedef enum {
     MISSION_NONE = 0,
     /* key1: purely geometric assembly. Requirement 1 (the team's own pieces
-       moved from the upper half of the A4 sheet to the lower half) and
+       moved from the left half of the landscape A4 sheet to the right half) and
        requirement 2(1) (white pieces supplied at the venue) are the same
        edge-matching solve, so they share one mission. */
     MISSION_GEOMETRIC,
@@ -93,7 +93,15 @@ typedef enum {
     /* The key was pressed before the crane task had parked the boom, so the
        acquisition was never armed. Distinct from the codes above because there
        was no run: waiting a second and pressing again is the whole fix. */
-    MISSION_RUN_DIAG_NOT_READY = 7
+    MISSION_RUN_DIAG_NOT_READY = 7,
+    /* At least one measured piece sat on the assembly side of the sheet's
+       midline, so the frame does not match the layout this code assembles for:
+       pieces in the left half, rectangle built in the right one. Either the
+       pieces were laid out on the wrong side or the camera is not producing the
+       A4 frame (landscape, top-left origin, +X right, +Y down) both ends share.
+       Kept apart from BAD_FRAME because the data is well formed and nothing on
+       the device can fix it - the sheet or the calibration has to change. */
+    MISSION_RUN_DIAG_WRONG_HALF = 8
 } MissionRunDiagnosis;
 
 typedef struct {
