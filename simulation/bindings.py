@@ -113,6 +113,10 @@ class DecisionVisionFrame(ctypes.Structure):
 class DecisionConfig(ctypes.Structure):
     _fields_ = [
         ("target_center", DecisionPoint),
+        # Must match DecisionConfig in decision.h field for field: ctypes maps
+        # these by offset, so a missing member does not fail loudly, it silently
+        # shifts every field after it onto the wrong bytes.
+        ("paper_divider_x_mm", ctypes.c_float),
         ("pick_z_mm", ctypes.c_float),
         ("transit_z_mm", ctypes.c_float),
         ("place_z_mm", ctypes.c_float),

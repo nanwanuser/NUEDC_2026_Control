@@ -12,7 +12,14 @@ extern "C" {
 /* Both from the task: at most four pieces, at most five edges each. */
 #define DECISION_MAX_PIECES       4U
 #define DECISION_MAX_VERTICES     5U
-#define DECISION_DEFAULT_MAX_NODES 50000U
+/* Node ceiling for the layout search. A set of four pieces that really tiles is
+   answered in a few hundred to a few tens of thousands of nodes, because the
+   search stops at the first layout the task cannot distinguish from perfect; the
+   budget is sized for the other case, where no arrangement is good enough and the
+   tree has to be exhausted before saying so. Measured dissections need up to
+   ~110k nodes for that, so this leaves room to spare and still bounds the solve
+   well inside the task's two minutes. */
+#define DECISION_DEFAULT_MAX_NODES 400000U
 
 /* The task scores an assembly on one geometric criterion: adjacent pieces'
    corresponding vertices within 2 cm. Every threshold below is therefore a
@@ -31,10 +38,14 @@ extern "C" {
    still count as lying on it. One degree of cutting error across a 100 mm edge
    is already ~1.7 mm, and the edge itself may be short of the corner. */
 #define DECISION_BOUNDARY_TOLERANCE_MM  8.0f
-/* Slack between the pieces' total area and their bounding rectangle. Gaps left
-   by imperfect cuts count against this, so it has to absorb the sum of all
-   inter-piece seams rather than any single one. */
-#define DECISION_MAX_FILL_ERROR_RATIO   0.20f
+/* Fraction of the bounding rectangle the assembly may fail to tile: the area
+   left uncovered plus the area covered twice, both counted as error. It has to
+   absorb the sum of all inter-piece seams rather than any single one, so it is
+   set against measured dissections rather than derived - four hand-cut pieces
+   with 3 mm of error per cut leave gaps worth about 9% of the rectangle, and a
+   set of pieces that cannot tile any rectangle in the allowed size range comes
+   out at 20% or worse. */
+#define DECISION_MAX_FILL_ERROR_RATIO   0.12f
 /* How deep one piece may reach into another before the pair counts as
    overlapping. Joining two edges of unequal length aligns their midpoints, so
    the longer piece necessarily pokes into its neighbour by up to half the
@@ -44,6 +55,21 @@ extern "C" {
    lying on top of another still reaches far deeper than this. */
 #define DECISION_OVERLAP_TOLERANCE_MM   \
     (0.5f * DECISION_EDGE_TOLERANCE_MM + 1.0f)
+/* Layout score at which the search stops instead of looking for a better one.
+   The task scores geometry on one criterion, adjacent pieces' corresponding
+   vertices within 2 cm, so a layout this close to a perfect tiling already earns
+   full marks and further search cannot gain anything - it only spends time the
+   two-minute limit does not have. The score is the fraction of the rectangle left
+   untiled plus the corner mismatch measured against the rectangle's size, so 2%
+   of a 100 mm rectangle is about 2 mm, an order of magnitude inside what the task
+   allows. Exact dissections reach 0 and stop at the first complete layout. */
+#define DECISION_GOOD_ENOUGH_SCORE      0.02f
+/* Shortest run of shared seam that counts as two pieces being joined. Edges of
+   unequal length are allowed to meet, because a cut that stops partway across
+   the rectangle leaves one long edge facing two shorter ones, but they still
+   have to touch along a real length rather than at a corner. The task requires
+   every edge to be at least 2 cm, so this only rules out corner contacts. */
+#define DECISION_MIN_EDGE_OVERLAP_MM    15.0f
 
 /* The sheet's midline along its long edge, in the shared A4 frame: landscape
    sheet, origin at the top-left corner, +X right along the long edge, +Y down the
@@ -56,12 +82,20 @@ extern "C" {
    cutting error that accumulates along each side. The task guarantees the true
    rectangle is inside the stated range; what is measured is not, so clamping to
    the exact range would reject a valid assembly whose edges came out a few
-   millimetres long. */
-#define DECISION_SIDE_MARGIN_MM         12.0f
-#define DECISION_MIN_SHORT_SIDE_MM      (50.0f - DECISION_SIDE_MARGIN_MM)
-#define DECISION_MAX_SHORT_SIDE_MM      (90.0f + DECISION_SIDE_MARGIN_MM)
-#define DECISION_MIN_LONG_SIDE_MM       (90.0f - DECISION_SIDE_MARGIN_MM)
-#define DECISION_MAX_LONG_SIDE_MM       (120.0f + DECISION_SIDE_MARGIN_MM)
+   millimetres long.
+ *
+ * The two margins differ because the error is one-sided. Assembling hand-cut
+ * pieces leaves gaps at the seams and never negative ones, so a measured side
+ * lands at or above the true side; the generous allowance belongs on the upper
+ * bound. Slack on the lower bound only buys tolerance for vision undermeasuring
+ * the outline, and every millimetre of it also admits arrangements that are not
+ * the target rectangle at all but a smaller one the pieces happen to cover. */
+#define DECISION_SIDE_UNDER_MARGIN_MM   4.0f
+#define DECISION_SIDE_OVER_MARGIN_MM    12.0f
+#define DECISION_MIN_SHORT_SIDE_MM      (50.0f - DECISION_SIDE_UNDER_MARGIN_MM)
+#define DECISION_MAX_SHORT_SIDE_MM      (90.0f + DECISION_SIDE_OVER_MARGIN_MM)
+#define DECISION_MIN_LONG_SIDE_MM       (90.0f - DECISION_SIDE_UNDER_MARGIN_MM)
+#define DECISION_MAX_LONG_SIDE_MM       (120.0f + DECISION_SIDE_OVER_MARGIN_MM)
 
 typedef struct {
     float x_mm;
