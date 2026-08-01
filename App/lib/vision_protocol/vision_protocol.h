@@ -13,6 +13,7 @@ extern "C" {
 #define VISION_PROTOCOL_VERSION               1U
 #define VISION_PROTOCOL_TYPE_FRAME            0x01U
 #define VISION_PROTOCOL_TYPE_CARD_CHUNK       0x02U
+#define VISION_PROTOCOL_TYPE_MODE_COMMAND     0x80U
 #define VISION_PROTOCOL_HEADER_FIRST          0xAAU
 #define VISION_PROTOCOL_HEADER_SECOND         0x55U
 #define VISION_PROTOCOL_END_FIRST             0x0DU
@@ -21,6 +22,9 @@ extern "C" {
 #define VISION_PROTOCOL_MAX_FRAME_LENGTH       118U
 #define VISION_PROTOCOL_STABLE_FRAME_COUNT     3U
 #define VISION_PROTOCOL_COORD_TOLERANCE_MM     0.5f
+#define VISION_PROTOCOL_MODE_COMMAND_FRAME_LENGTH 13U
+#define VISION_PROTOCOL_MODE_GEOMETRIC         0x01U
+#define VISION_PROTOCOL_MODE_CARD_PATTERN      0x02U
 #define VISION_PROTOCOL_CARD_FORMAT_VERSION    1U
 #define VISION_PROTOCOL_CARD_MAX_SERIALIZED_LENGTH 1536U
 #define VISION_PROTOCOL_CARD_CHUNK_HEADER_LENGTH 11U
@@ -106,6 +110,11 @@ uint8_t VisionProtocolCardAssembler_Add(
     DecisionCardFrame *card_frame);
 
 uint16_t VisionProtocol_Crc16(const uint8_t *data, size_t length);
+size_t VisionProtocol_EncodeModeCommand(
+    DecisionStrategy strategy,
+    uint16_t seq,
+    uint8_t *buffer,
+    size_t capacity);
 
 #ifdef __cplusplus
 }

@@ -31,10 +31,10 @@
 - Produces `VisionProtocol_EncodeModeCommand(strategy, seq, buffer, capacity)`.
 - Produces `ModeCommandParser.feed(data) -> list[int]`.
 
-- [ ] Add failing C tests for the exact 13-byte control frame and invalid inputs.
-- [ ] Add failing Python tests for fragmented/noisy input, CRC corruption and unknown modes.
-- [ ] Implement the C encoder and Python incremental parser.
-- [ ] Run the focused C and Python protocol tests until green.
+- [x] Add failing C tests for the exact 13-byte control frame and invalid inputs.
+- [x] Add failing Python tests for fragmented/noisy input, CRC corruption and unknown modes.
+- [x] Implement the C encoder and Python incremental parser.
+- [x] Run the focused C and Python protocol tests until green.
 
 ### Task 2: Gate MaixCAM publishing by the selected mode
 
@@ -47,11 +47,11 @@
 - Produces `VisionUartPublisher.poll_mode_command()`.
 - Exposes `VisionUartPublisher.mode` as `None`, geometric, or card-pattern.
 
-- [ ] Replace the interleaving expectation with failing mode-gating tests.
-- [ ] Poll commands before the measurement publish branch in every main-loop iteration.
-- [ ] Send only geometry in geometric mode and only card chunks in card mode.
-- [ ] Reset frozen results on a real mode change; keep duplicate commands idempotent.
-- [ ] Run all MaixCAM tests.
+- [x] Replace the interleaving expectation with failing mode-gating tests.
+- [x] Poll commands before the measurement publish branch in every main-loop iteration.
+- [x] Send only geometry in geometric mode and only card chunks in card mode.
+- [x] Reset frozen results on a real mode change; keep duplicate commands idempotent.
+- [x] Run all MaixCAM tests.
 
 ### Task 3: Send and retry the selected mode from STM32
 
@@ -64,10 +64,10 @@
 - Consumes `DecisionTaskRequest.strategy` and `VisionProtocol_EncodeModeCommand()`.
 - Sends immediately after receive startup, then every 100ms up to five attempts until desired data arrives.
 
-- [ ] Add mode command counters to `VisionUartOutput` for debugger visibility.
-- [ ] Send the command after a mission arms and stop retrying at the first matching result type.
-- [ ] Preserve mismatched-frame ignore behavior while a switch is taking effect.
-- [ ] Update the protocol documentation from receive-only to bidirectional control.
+- [x] Add mode command counters to `VisionUartOutput` for debugger visibility.
+- [x] Send the command after a mission arms and stop retrying at the first matching result type.
+- [x] Preserve mismatched-frame ignore behavior while a switch is taking effect.
+- [x] Update the protocol documentation from receive-only to bidirectional control.
 
 ### Task 4: Full verification
 
@@ -75,8 +75,7 @@
 - Modify: `progress.md`
 - Modify: this plan, marking completed steps.
 
-- [ ] Run MaixCAM pytest and Python syntax compilation.
-- [ ] Run STM32 protocol, decision and simulation tests.
-- [ ] Build the Debug firmware.
-- [ ] Run `git diff --check` in both repositories and record hardware-only UART timing validation.
-
+- [x] Run MaixCAM pytest and Python syntax compilation.
+- [x] Run STM32 protocol, decision and simulation tests.
+- [x] Build the Debug firmware.
+- [x] Run `git diff --check` in both repositories and record hardware-only UART timing validation.

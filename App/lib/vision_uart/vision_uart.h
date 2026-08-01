@@ -29,6 +29,9 @@ typedef struct {
        means something is driving RX, so it separates a link that is not
        connected from one where the two ends disagree on baud rate or levels. */
     uint32_t line_error_count;
+    /* Mode commands sent to MaixCAM for this armed acquisition. */
+    uint8_t mode_command_tx_count;
+    uint8_t mode_command_error_count;
     /* Mirrors the armed request so the caller can tell which run this is. */
     uint32_t arm_id;
 } VisionUartOutput;

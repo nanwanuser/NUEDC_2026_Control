@@ -13,6 +13,12 @@ static int16_t read_i16_le(const uint8_t *data)
     return (int16_t)read_u16_le(data);
 }
 
+static void write_u16_le(uint8_t *data, uint16_t value)
+{
+    data[0] = (uint8_t)value;
+    data[1] = (uint8_t)(value >> 8U);
+}
+
 static uint32_t read_u32_le(const uint8_t *data)
 {
     return (uint32_t)read_u16_le(data) |
@@ -449,6 +455,40 @@ uint8_t VisionProtocolStabilizer_Add(
 
     *stable_packet = stabilizer->candidate;
     return 1U;
+}
+
+size_t VisionProtocol_EncodeModeCommand(DecisionStrategy strategy,
+                                        uint16_t seq,
+                                        uint8_t *buffer,
+                                        size_t capacity)
+{
+    uint8_t mode;
+    uint16_t crc;
+
+    if (buffer == NULL ||
+        capacity < VISION_PROTOCOL_MODE_COMMAND_FRAME_LENGTH) {
+        return 0U;
+    }
+    if (strategy == DECISION_STRATEGY_GEOMETRIC) {
+        mode = VISION_PROTOCOL_MODE_GEOMETRIC;
+    } else if (strategy == DECISION_STRATEGY_CARD_PATTERN) {
+        mode = VISION_PROTOCOL_MODE_CARD_PATTERN;
+    } else {
+        return 0U;
+    }
+
+    buffer[0] = VISION_PROTOCOL_HEADER_FIRST;
+    buffer[1] = VISION_PROTOCOL_HEADER_SECOND;
+    buffer[2] = VISION_PROTOCOL_VERSION;
+    buffer[3] = VISION_PROTOCOL_TYPE_MODE_COMMAND;
+    write_u16_le(&buffer[4], seq);
+    write_u16_le(&buffer[6], 1U);
+    buffer[8] = mode;
+    crc = VisionProtocol_Crc16(&buffer[2], 7U);
+    write_u16_le(&buffer[9], crc);
+    buffer[11] = VISION_PROTOCOL_END_FIRST;
+    buffer[12] = VISION_PROTOCOL_END_SECOND;
+    return VISION_PROTOCOL_MODE_COMMAND_FRAME_LENGTH;
 }
 
 static uint8_t card_take(const uint8_t *data,

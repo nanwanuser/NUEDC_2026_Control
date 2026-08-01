@@ -53,6 +53,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     App/lib/decision/decision.c
     App/lib/trajectory/trajectory.c
     App/lib/vision_protocol/vision_protocol.c
+    App/lib/vision_uart/vision_mode_retry.c
     App/lib/vision_uart/vision_uart.c
     Task/crane_control/crane_control.c
     Task/crane_control/crane_control_config.c

@@ -367,6 +367,42 @@ static int test_card_aggregate_crc_failure_resets_assembler(void)
     return 0;
 }
 
+static int test_encode_mode_command(void)
+{
+    uint8_t frame[VISION_PROTOCOL_MODE_COMMAND_FRAME_LENGTH];
+    uint16_t encoded_crc;
+    size_t length = VisionProtocol_EncodeModeCommand(
+        DECISION_STRATEGY_CARD_PATTERN, 0x1234U, frame, sizeof(frame));
+
+    ASSERT_TRUE(length == VISION_PROTOCOL_MODE_COMMAND_FRAME_LENGTH);
+    ASSERT_TRUE(frame[0] == VISION_PROTOCOL_HEADER_FIRST);
+    ASSERT_TRUE(frame[1] == VISION_PROTOCOL_HEADER_SECOND);
+    ASSERT_TRUE(frame[2] == VISION_PROTOCOL_VERSION);
+    ASSERT_TRUE(frame[3] == VISION_PROTOCOL_TYPE_MODE_COMMAND);
+    ASSERT_TRUE(frame[4] == 0x34U && frame[5] == 0x12U);
+    ASSERT_TRUE(frame[6] == 1U && frame[7] == 0U);
+    ASSERT_TRUE(frame[8] == VISION_PROTOCOL_MODE_CARD_PATTERN);
+    encoded_crc = (uint16_t)(frame[9] | ((uint16_t)frame[10] << 8U));
+    ASSERT_TRUE(encoded_crc == VisionProtocol_Crc16(&frame[2], 7U));
+    ASSERT_TRUE(frame[11] == VISION_PROTOCOL_END_FIRST);
+    ASSERT_TRUE(frame[12] == VISION_PROTOCOL_END_SECOND);
+
+    ASSERT_TRUE(VisionProtocol_EncodeModeCommand(
+                    DECISION_STRATEGY_GEOMETRIC, 7U,
+                    frame, sizeof(frame)) == sizeof(frame));
+    ASSERT_TRUE(frame[8] == VISION_PROTOCOL_MODE_GEOMETRIC);
+    ASSERT_TRUE(VisionProtocol_EncodeModeCommand(
+                    (DecisionStrategy)99, 0U,
+                    frame, sizeof(frame)) == 0U);
+    ASSERT_TRUE(VisionProtocol_EncodeModeCommand(
+                    DECISION_STRATEGY_GEOMETRIC, 0U,
+                    frame, sizeof(frame) - 1U) == 0U);
+    ASSERT_TRUE(VisionProtocol_EncodeModeCommand(
+                    DECISION_STRATEGY_GEOMETRIC, 0U,
+                    NULL, sizeof(frame)) == 0U);
+    return 0;
+}
+
 int main(void)
 {
     if (test_decode_four_pieces() != 0) return 1;
@@ -374,6 +410,7 @@ int main(void)
     if (test_three_stable_frames() != 0) return 1;
     if (test_card_chunks_reassemble_out_of_order() != 0) return 1;
     if (test_card_aggregate_crc_failure_resets_assembler() != 0) return 1;
+    if (test_encode_mode_command() != 0) return 1;
     puts("vision protocol tests passed");
     return 0;
 }

@@ -1,6 +1,7 @@
 #include "vision_uart.h"
 
 #include "decision_task.h"
+#include "vision_mode_retry.h"
 #include "vision_protocol.h"
 
 #include "FreeRTOS.h"
@@ -12,6 +13,8 @@
 
 #define VISION_UART_TASK_PERIOD_MS       1U
 #define VISION_UART_FRAME_TIMEOUT_MS     50U
+#define VISION_UART_TX_TIMEOUT_MS        20U
+#define VISION_UART_MODE_RETRY_MS        100U
 #define VISION_UART_RX_CHUNK_SIZE        VISION_PROTOCOL_MAX_FRAME_LENGTH
 #define VISION_UART_RX_RING_SIZE         512U
 
@@ -97,6 +100,21 @@ static void close_receive(void)
     taskEXIT_CRITICAL();
 }
 
+static uint8_t send_mode_command(DecisionStrategy strategy, uint16_t seq)
+{
+    uint8_t frame[VISION_PROTOCOL_MODE_COMMAND_FRAME_LENGTH];
+    size_t length = VisionProtocol_EncodeModeCommand(
+        strategy, seq, frame, sizeof(frame));
+
+    if (length == 0U) {
+        return 0U;
+    }
+    return HAL_UART_Transmit(&huart1,
+                             frame,
+                             (uint16_t)length,
+                             VISION_UART_TX_TIMEOUT_MS) == HAL_OK;
+}
+
 void VisionUart_Init(void)
 {
     VisionUartOutput output;
@@ -173,6 +191,7 @@ void VisionUart_App(void *argument)
     uint32_t card_layout_id = 0U;
     uint16_t card_full_crc = 0U;
     uint8_t card_stable_count = 0U;
+    VisionModeRetry mode_retry;
     uint8_t submitted = 1U;
 
     (void)argument;
@@ -201,10 +220,20 @@ void VisionUart_App(void *argument)
             card_full_crc = 0U;
             card_stable_count = 0U;
             output.stable_count = 0U;
+            output.mode_command_tx_count = 0U;
+            output.mode_command_error_count = 0U;
             submitted = 0U;
             last_byte_tick = osKernelGetTickCount();
             if (start_receive() != 0U) {
                 output.state = VISION_UART_STATE_RECEIVING;
+                VisionModeRetry_Arm(&mode_retry, osKernelGetTickCount());
+                if (send_mode_command(
+                        VisionUart_BaseRequest.strategy,
+                        (uint16_t)output.arm_id) != 0U) {
+                    ++output.mode_command_tx_count;
+                } else {
+                    ++output.mode_command_error_count;
+                }
             } else {
                 close_receive();
                 output.state = VISION_UART_STATE_ERROR;
@@ -229,6 +258,20 @@ void VisionUart_App(void *argument)
         if (submitted != 0U) {
             osDelay(VISION_UART_TASK_PERIOD_MS);
             continue;
+        }
+
+        if (VisionModeRetry_TakeDue(
+                &mode_retry,
+                osKernelGetTickCount(),
+                pdMS_TO_TICKS(VISION_UART_MODE_RETRY_MS)) != 0U) {
+            if (send_mode_command(
+                    VisionUart_BaseRequest.strategy,
+                    (uint16_t)output.arm_id) != 0U) {
+                ++output.mode_command_tx_count;
+            } else {
+                ++output.mode_command_error_count;
+            }
+            publish_output(&output);
         }
 
         if (VisionUart_RxOverflow != 0U) {
@@ -260,6 +303,10 @@ void VisionUart_App(void *argument)
 
             last_byte_tick = osKernelGetTickCount();
             result = VisionProtocolParser_PushByte(&parser, byte, &packet);
+            if (VisionModeRetry_ResultMatches(
+                    VisionUart_BaseRequest.strategy, result) != 0U) {
+                VisionModeRetry_Stop(&mode_retry);
+            }
             if (result == VISION_PROTOCOL_RESULT_FRAME &&
                 VisionUart_BaseRequest.strategy ==
                     DECISION_STRATEGY_GEOMETRIC) {
