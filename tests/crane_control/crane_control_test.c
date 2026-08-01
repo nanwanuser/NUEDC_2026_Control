@@ -319,13 +319,13 @@ static int test_startup_zeroing_retries_each_exchange(void)
     }
     CraneControl_GetState(&state);
     if (state.initialized == 0U ||
-        relative_attempts[0] != 3U || relative_attempts[1] != 1U ||
-        clear_attempts[0] != 1U || clear_attempts[1] != 3U ||
+        relative_attempts[0] != 5U || relative_attempts[1] != 1U ||
+        clear_attempts[0] != 3U || clear_attempts[1] != 3U ||
         realtime_attempts[0] != 3U || realtime_attempts[1] != 1U ||
         absolute_zero_attempts[0] != 1U ||
         absolute_zero_attempts[1] != 3U ||
-        retry_delay_count != 8U || startup_timeout_mismatch != 0U) {
-        fputs("startup exchanges did not retry independently with 10 ms gaps\n",
+        retry_delay_count != 4U || startup_timeout_mismatch != 0U) {
+        fputs("startup zeroing did not restart the failed axis transaction\n",
               stderr);
         return 1;
     }
@@ -346,8 +346,9 @@ static int test_startup_zeroing_stops_after_three_failures(void)
     }
     CraneControl_GetState(&state);
     if (state.initialized != 0U || realtime_attempts[1] != 3U ||
-        retry_delay_count != 2U) {
-        fputs("startup retry exceeded three attempts or used wrong delays\n",
+        relative_attempts[1] != 3U || clear_attempts[1] != 3U ||
+        retry_delay_count != 0U) {
+        fputs("startup zeroing did not stop after three full transactions\n",
               stderr);
         return 1;
     }

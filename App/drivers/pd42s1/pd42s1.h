@@ -254,7 +254,8 @@ max485_status_t pd42s1_read_arrival_flag(uint8_t motor_id,
 
 /**
  * @brief Read the drive's active work mode from driver parameters (0x32).
- * @param mode Receives Byte2 of the 32-byte parameter response.
+ * @param mode Receives Byte2 of the driver-parameter response. Firmware
+ *        revisions may append parameters after this field.
  * @note Communication position mode covers both absolute and relative position
  *       commands; this query is used to verify that torque mode has ended.
  */

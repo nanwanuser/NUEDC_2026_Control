@@ -4,7 +4,7 @@
 
 #define PD42S1_TORQUE_PAYLOAD_LENGTH 3U
 #define PD42S1_POSITION_PAYLOAD_LENGTH 8U
-#define PD42S1_DRIVER_PARAMETERS_PAYLOAD_LENGTH 32U
+#define PD42S1_DRIVER_PARAMETERS_MIN_PAYLOAD_LENGTH 2U
 /* Mode, direction, four speed bytes, two current bytes. */
 #define PD42S1_HOME_PARAMETERS_PAYLOAD_LENGTH 8U
 /* One int32 position. */
@@ -362,7 +362,7 @@ max485_status_t pd42s1_read_work_mode(uint8_t motor_id,
     }
     if (frame.address != motor_id ||
         frame.function != (uint8_t)PD42S1_COMMAND_READ_DRIVER_PARAMETERS ||
-        frame.payload_length != PD42S1_DRIVER_PARAMETERS_PAYLOAD_LENGTH ||
+        frame.payload_length < PD42S1_DRIVER_PARAMETERS_MIN_PAYLOAD_LENGTH ||
         frame.payload[0] != PD42S1_RESULT_SUCCESS ||
         frame.payload[1] > (uint8_t)PD42S1_WORK_MODE_HOME) {
         return MAX485_STATUS_UNEXPECTED_FRAME;
