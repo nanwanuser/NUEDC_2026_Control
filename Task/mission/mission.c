@@ -73,6 +73,9 @@ static volatile MissionOutput Mission_Output;
 static volatile MissionId Mission_StartRequest;
 static volatile uint8_t Mission_AbortRequest;
 static uint32_t Mission_NextRunId = 1U;
+/* DecisionTaskRequest includes the complete card feature frame and no longer
+   fits on the 2 KB Mission task stack together with Mission_App. */
+static DecisionTaskRequest Mission_ArmRequest;
 
 static void publish_output(const MissionOutput *output)
 {
@@ -269,7 +272,6 @@ static void build_request(MissionId mission, DecisionTaskRequest *request)
 
 static uint8_t arm_mission(MissionId mission, uint32_t run_id)
 {
-    DecisionTaskRequest request;
     CraneControlState crane_state;
 
     /* The crane task parks the boom before it accepts references. Starting ahead
@@ -281,8 +283,8 @@ static uint8_t arm_mission(MissionId mission, uint32_t run_id)
         return 0U;
     }
 
-    build_request(mission, &request);
-    return VisionUart_Arm(&request, run_id);
+    build_request(mission, &Mission_ArmRequest);
+    return VisionUart_Arm(&Mission_ArmRequest, run_id);
 }
 
 static MissionId take_key_request(void)
