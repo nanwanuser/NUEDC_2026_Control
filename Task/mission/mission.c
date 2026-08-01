@@ -30,6 +30,7 @@
 #define MISSION_DIAG_GAP_MS         250U
 #define MISSION_DIAG_BEEP_MS        100U
 #define MISSION_DIAG_BEEP_GAP_MS    200U
+#define MISSION_CRANE_READY_BEEP_MS 100U
 
 /* Where the assembled rectangle goes.
  *
@@ -150,6 +151,11 @@ void Mission_Init(void)
     output.trajectory_result = TRAJECTORY_RESULT_OK;
     output.crane_status = CRANE_CONTROL_OK;
     Mission_Output = output;
+}
+
+void Mission_SignalCraneReady(void)
+{
+    (void)buzzer_beep(&Mission_Buzzer, MISSION_CRANE_READY_BEEP_MS);
 }
 
 uint8_t Mission_Start(MissionId mission)

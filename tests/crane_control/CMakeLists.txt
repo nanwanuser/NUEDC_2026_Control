@@ -23,3 +23,5 @@ target_compile_options(crane_control_test PRIVATE -Wall -Wextra -Werror)
 target_link_libraries(crane_control_test PRIVATE m)
 
 add_test(NAME crane_control_test COMMAND crane_control_test)
+add_test(NAME crane_startup_retry_test
+         COMMAND crane_control_test --startup-retry)

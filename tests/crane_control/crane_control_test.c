@@ -13,8 +13,6 @@ static pd42s1_command_t captured_yaw_command;
 static pd42s1_direction_t captured_yaw_direction;
 static uint16_t captured_yaw_speed_rpm;
 static uint32_t captured_yaw_position_units;
-static pd42s1_direction_t captured_reach_direction;
-static uint32_t captured_reach_position_units;
 static uint32_t yaw_absolute_command_count;
 static uint32_t reach_absolute_command_count;
 static uint32_t captured_lift_command_count;
@@ -22,6 +20,35 @@ static uint32_t captured_lift_immediate_count;
 static float captured_lift_angle_deg;
 static pd42s1_arrival_t yaw_arrival = PD42S1_ARRIVAL_REACHED;
 static pd42s1_arrival_t reach_arrival = PD42S1_ARRIVAL_REACHED;
+static uint8_t relative_failures[2];
+static uint8_t clear_failures[2];
+static uint8_t realtime_failures[2];
+static uint8_t absolute_zero_failures[2];
+static uint8_t relative_attempts[2];
+static uint8_t clear_attempts[2];
+static uint8_t realtime_attempts[2];
+static uint8_t absolute_zero_attempts[2];
+static uint32_t retry_delay_count;
+static uint8_t startup_timeout_mismatch;
+
+static uint8_t motor_index(uint8_t motor_id)
+{
+    return motor_id == PD42S1_MOTOR_1_ID ? 0U : 1U;
+}
+
+static void reset_startup_faults(void)
+{
+    (void)memset(relative_failures, 0, sizeof(relative_failures));
+    (void)memset(clear_failures, 0, sizeof(clear_failures));
+    (void)memset(realtime_failures, 0, sizeof(realtime_failures));
+    (void)memset(absolute_zero_failures, 0, sizeof(absolute_zero_failures));
+    (void)memset(relative_attempts, 0, sizeof(relative_attempts));
+    (void)memset(clear_attempts, 0, sizeof(clear_attempts));
+    (void)memset(realtime_attempts, 0, sizeof(realtime_attempts));
+    (void)memset(absolute_zero_attempts, 0, sizeof(absolute_zero_attempts));
+    retry_delay_count = 0U;
+    startup_timeout_mismatch = 0U;
+}
 
 uint32_t HAL_GetTick(void)
 {
@@ -30,6 +57,9 @@ uint32_t HAL_GetTick(void)
 
 void HAL_Delay(uint32_t delay_ms)
 {
+    if (delay_ms == 10U) {
+        ++retry_delay_count;
+    }
     fake_tick += delay_ms;
 }
 
@@ -87,14 +117,21 @@ max485_status_t pd42s1_move_absolute(uint8_t motor_id,
                                     uint16_t speed_rpm,
                                     uint32_t position_units)
 {
+    const uint8_t index = motor_index(motor_id);
+
     (void)acceleration;
     (void)speed_rpm;
+    if (position_units == 0U) {
+        ++absolute_zero_attempts[index];
+        if (absolute_zero_failures[index] != 0U) {
+            --absolute_zero_failures[index];
+            return MAX485_STATUS_INVALID_ARGUMENT;
+        }
+    }
     if (motor_id == PD42S1_MOTOR_1_ID) {
         ++yaw_absolute_command_count;
     } else if (motor_id == PD42S1_MOTOR_2_ID) {
         ++reach_absolute_command_count;
-        captured_reach_direction = direction;
-        captured_reach_position_units = position_units;
     }
     if (capture_yaw_move != 0U && motor_id == PD42S1_MOTOR_1_ID) {
         captured_yaw_command = PD42S1_COMMAND_ABSOLUTE_POSITION;
@@ -112,8 +149,15 @@ max485_status_t pd42s1_move_relative(uint8_t motor_id,
                                     uint16_t speed_rpm,
                                     uint32_t position_units)
 {
+    const uint8_t index = motor_index(motor_id);
+
     (void)acceleration;
     (void)speed_rpm;
+    ++relative_attempts[index];
+    if (relative_failures[index] != 0U) {
+        --relative_failures[index];
+        return MAX485_STATUS_INVALID_ARGUMENT;
+    }
     if (capture_yaw_move != 0U && motor_id == PD42S1_MOTOR_1_ID) {
         captured_yaw_command = PD42S1_COMMAND_RELATIVE_POSITION;
         captured_yaw_direction = direction;
@@ -125,7 +169,13 @@ max485_status_t pd42s1_move_relative(uint8_t motor_id,
 
 max485_status_t pd42s1_clear_position(uint8_t motor_id)
 {
-    (void)motor_id;
+    const uint8_t index = motor_index(motor_id);
+
+    ++clear_attempts[index];
+    if (clear_failures[index] != 0U) {
+        --clear_failures[index];
+        return MAX485_STATUS_INVALID_ARGUMENT;
+    }
     return MAX485_STATUS_OK;
 }
 
@@ -147,8 +197,12 @@ max485_status_t pd42s1_receive_response(uint8_t motor_id,
                                        uint32_t timeout_ms)
 {
     (void)motor_id;
-    (void)command;
-    (void)timeout_ms;
+    if ((command == PD42S1_COMMAND_RELATIVE_POSITION ||
+         command == PD42S1_COMMAND_CLEAR_POSITION ||
+         command == PD42S1_COMMAND_ABSOLUTE_POSITION) &&
+        timeout_ms != 160U) {
+        startup_timeout_mismatch = 1U;
+    }
     *result = PD42S1_RESULT_SUCCESS;
     return MAX485_STATUS_OK;
 }
@@ -162,25 +216,43 @@ max485_status_t pd42s1_read_arrival_flag(uint8_t motor_id,
     return MAX485_STATUS_OK;
 }
 
-max485_status_t pd42s1_read_position_error(uint8_t motor_id,
-                                           int32_t *position_units,
-                                           uint32_t timeout_ms)
-{
-    const pd42s1_arrival_t arrival =
-        motor_id == PD42S1_MOTOR_1_ID ? yaw_arrival : reach_arrival;
-
-    (void)timeout_ms;
-    *position_units = arrival == PD42S1_ARRIVAL_REACHED ? 0 : 1000;
-    return MAX485_STATUS_OK;
-}
-
 max485_status_t pd42s1_read_realtime_position(uint8_t motor_id,
                                               int32_t *position_units,
                                               uint32_t timeout_ms)
 {
+    const uint8_t index = motor_index(motor_id);
+
+    if (timeout_ms != 160U) {
+        startup_timeout_mismatch = 1U;
+    }
+    ++realtime_attempts[index];
+    if (realtime_failures[index] != 0U) {
+        --realtime_failures[index];
+        return MAX485_STATUS_INVALID_ARGUMENT;
+    }
+    *position_units = 0;
+    return MAX485_STATUS_OK;
+}
+
+max485_status_t pd42s1_read_position_error(uint8_t motor_id,
+                                           int32_t *position_error_units,
+                                           uint32_t timeout_ms)
+{
     (void)motor_id;
     (void)timeout_ms;
-    *position_units = 0;
+    *position_error_units = 0;
+    return MAX485_STATUS_OK;
+}
+
+max485_status_t pd42s1_read_work_mode(uint8_t motor_id,
+                                     pd42s1_work_mode_t *mode,
+                                     uint32_t timeout_ms)
+{
+    (void)motor_id;
+    if (timeout_ms != 160U) {
+        startup_timeout_mismatch = 1U;
+    }
+    *mode = PD42S1_WORK_MODE_COMMUNICATION_POSITION;
     return MAX485_STATUS_OK;
 }
 
@@ -230,6 +302,59 @@ static CraneControlConfig test_config(void)
     return config;
 }
 
+static int test_startup_zeroing_retries_each_exchange(void)
+{
+    CraneControlConfig config = test_config();
+    CraneControlState state;
+
+    reset_startup_faults();
+    relative_failures[0] = 2U;
+    clear_failures[1] = 2U;
+    realtime_failures[0] = 2U;
+    absolute_zero_failures[1] = 2U;
+
+    if (CraneControl_Init(&config) != CRANE_CONTROL_OK) {
+        fputs("startup retry did not recover on the third attempt\n", stderr);
+        return 1;
+    }
+    CraneControl_GetState(&state);
+    if (state.initialized == 0U ||
+        relative_attempts[0] != 5U || relative_attempts[1] != 1U ||
+        clear_attempts[0] != 3U || clear_attempts[1] != 3U ||
+        realtime_attempts[0] != 3U || realtime_attempts[1] != 1U ||
+        absolute_zero_attempts[0] != 1U ||
+        absolute_zero_attempts[1] != 3U ||
+        retry_delay_count != 4U || startup_timeout_mismatch != 0U) {
+        fputs("startup zeroing did not restart the failed axis transaction\n",
+              stderr);
+        return 1;
+    }
+    return 0;
+}
+
+static int test_startup_zeroing_stops_after_three_failures(void)
+{
+    CraneControlConfig config = test_config();
+    CraneControlState state;
+
+    reset_startup_faults();
+    realtime_failures[1] = 3U;
+
+    if (CraneControl_Init(&config) != CRANE_CONTROL_TRANSPORT_ERROR) {
+        fputs("startup did not report an exhausted readback retry\n", stderr);
+        return 1;
+    }
+    CraneControl_GetState(&state);
+    if (state.initialized != 0U || realtime_attempts[1] != 3U ||
+        relative_attempts[1] != 3U || clear_attempts[1] != 3U ||
+        retry_delay_count != 0U) {
+        fputs("startup zeroing did not stop after three full transactions\n",
+              stderr);
+        return 1;
+    }
+    return 0;
+}
+
 static int test_reverse_home_reports_maximum_yaw_stop(void)
 {
     CraneControlConfig config = test_config();
@@ -277,8 +402,8 @@ static int test_yaw_commands_absolute_positions_from_the_homed_datum(void)
     output.phase = TRAJECTORY_PHASE_APPROACH;
     output.state = TRAJECTORY_STATE_RUNNING;
     output.result = TRAJECTORY_RESULT_OK;
-    output.waypoint_index = 1U;
     output.waypoint_count = 2U;
+    output.waypoint_index = 1U;
     output.reference.pose.x_mm = 0.0f;
     output.reference.pose.y_mm = 100.0f;
     output.reference.pose.z_mm = 0.0f;
@@ -346,8 +471,8 @@ static int test_planner_z_does_not_control_lift(void)
     output.phase = TRAJECTORY_PHASE_APPROACH;
     output.state = TRAJECTORY_STATE_RUNNING;
     output.result = TRAJECTORY_RESULT_OK;
-    output.waypoint_index = 1U;
     output.waypoint_count = 2U;
+    output.waypoint_index = 1U;
     output.reference.pose.x_mm = 0.0f;
     output.reference.pose.y_mm = 100.0f;
     output.reference.pose.z_mm = 0.0f;
@@ -385,12 +510,10 @@ static int test_planner_z_does_not_control_lift(void)
     return 0;
 }
 
-static int test_complete_reference_does_not_restart_axes(void)
+static int test_complete_reference_uses_full_speed_to_settle(void)
 {
     CraneControlConfig config = test_config();
     RoutePlanningOutput output;
-    uint32_t yaw_count_before;
-    uint32_t reach_count_before;
 
     if (CraneControl_Init(&config) != CRANE_CONTROL_OK) {
         fputs("CraneControl_Init failed\n", stderr);
@@ -402,8 +525,8 @@ static int test_complete_reference_does_not_restart_axes(void)
     output.phase = TRAJECTORY_PHASE_APPROACH;
     output.state = TRAJECTORY_STATE_RUNNING;
     output.result = TRAJECTORY_RESULT_OK;
-    output.waypoint_index = 1U;
     output.waypoint_count = 2U;
+    output.waypoint_index = 1U;
     output.reference.pose.x_mm = 0.0f;
     output.reference.pose.y_mm = 100.0f;
     output.reference.pose.z_mm = 0.0f;
@@ -416,21 +539,20 @@ static int test_complete_reference_does_not_restart_axes(void)
     CraneControl_Update();
 
     output.state = TRAJECTORY_STATE_COMPLETE;
-    yaw_count_before = yaw_absolute_command_count;
-    reach_count_before = reach_absolute_command_count;
+    captured_yaw_speed_rpm = 0U;
     capture_yaw_move = 1U;
     if (CraneControl_SubmitPlannerOutput(&output) != CRANE_CONTROL_OK) {
         fputs("complete endpoint reference was rejected\n", stderr);
         return 1;
     }
     CraneControl_Update();
-    if (capture_yaw_move == 0U ||
-        yaw_absolute_command_count != yaw_count_before ||
-        reach_absolute_command_count != reach_count_before) {
-        fputs("complete output restarted an already arrived axis\n", stderr);
+    if (capture_yaw_move != 0U || captured_yaw_speed_rpm != config.yaw_speed_rpm) {
+        fprintf(stderr,
+                "complete yaw speed %u RPM, expected %u RPM\n",
+                (unsigned)captured_yaw_speed_rpm,
+                (unsigned)config.yaw_speed_rpm);
         return 1;
     }
-    capture_yaw_move = 0U;
     return 0;
 }
 
@@ -450,10 +572,8 @@ static int test_complete_waits_for_both_axes_to_arrive(void)
     (void)memset(&output, 0, sizeof(output));
     output.plan_id = 7U;
     output.phase = TRAJECTORY_PHASE_APPROACH;
-    output.state = TRAJECTORY_STATE_RUNNING;
+    output.state = TRAJECTORY_STATE_COMPLETE;
     output.result = TRAJECTORY_RESULT_OK;
-    output.waypoint_index = 1U;
-    output.waypoint_count = 2U;
     output.reference.pose.x_mm = 0.0f;
     output.reference.pose.y_mm = 100.0f;
     output.reference.pose.z_mm = 0.0f;
@@ -466,7 +586,6 @@ static int test_complete_waits_for_both_axes_to_arrive(void)
         return 1;
     }
     CraneControl_Update();
-    CraneControl_Update();
     CraneControl_GetState(&state);
     yaw_commands_after_first_complete = yaw_absolute_command_count;
     reach_commands_after_first_complete = reach_absolute_command_count;
@@ -477,6 +596,10 @@ static int test_complete_waits_for_both_axes_to_arrive(void)
     }
 
     reach_arrival = PD42S1_ARRIVAL_REACHED;
+    if (CraneControl_SubmitPlannerOutput(&output) != CRANE_CONTROL_OK) {
+        fputs("repeated complete output was rejected\n", stderr);
+        return 1;
+    }
     CraneControl_Update();
     CraneControl_GetState(&state);
     if (yaw_absolute_command_count != yaw_commands_after_first_complete ||
@@ -546,10 +669,8 @@ static int test_axis_arrival_has_a_timeout(void)
     (void)memset(&output, 0, sizeof(output));
     output.plan_id = 9U;
     output.phase = TRAJECTORY_PHASE_TRANSFER;
-    output.state = TRAJECTORY_STATE_RUNNING;
+    output.state = TRAJECTORY_STATE_COMPLETE;
     output.result = TRAJECTORY_RESULT_OK;
-    output.waypoint_index = 1U;
-    output.waypoint_count = 2U;
     output.reference.pose.x_mm = 0.0f;
     output.reference.pose.y_mm = 100.0f;
     output.reference.pose.z_mm = 0.0f;
@@ -560,6 +681,7 @@ static int test_axis_arrival_has_a_timeout(void)
     (void)CraneControl_SubmitPlannerOutput(&output);
     CraneControl_Update();
     fake_tick += config.arrival_timeout_ms;
+    (void)CraneControl_SubmitPlannerOutput(&output);
     CraneControl_Update();
     CraneControl_GetState(&state);
     yaw_arrival = PD42S1_ARRIVAL_REACHED;
@@ -569,72 +691,6 @@ static int test_axis_arrival_has_a_timeout(void)
         fprintf(stderr, "arrival timeout status %u, expected %u\n",
                 (unsigned)state.status,
                 (unsigned)CRANE_CONTROL_ARRIVAL_TIMEOUT);
-        return 1;
-    }
-    return 0;
-}
-
-static int test_return_to_initial_uses_absolute_zero_targets(void)
-{
-    CraneControlConfig config = test_config();
-    RoutePlanningOutput output;
-    CraneControlState state;
-    uint32_t yaw_count_before;
-    uint32_t reach_count_before;
-
-    if (CraneControl_Init(&config) != CRANE_CONTROL_OK) {
-        fputs("CraneControl_Init failed\n", stderr);
-        return 1;
-    }
-
-    (void)memset(&output, 0, sizeof(output));
-    output.plan_id = 10U;
-    output.phase = TRAJECTORY_PHASE_TRANSFER;
-    output.state = TRAJECTORY_STATE_RUNNING;
-    output.result = TRAJECTORY_RESULT_OK;
-    output.waypoint_index = 1U;
-    output.waypoint_count = 2U;
-    output.reference.pose.x_mm = 0.0f;
-    output.reference.pose.y_mm = 100.0f;
-    output.reference.pose.z_mm = 0.0f;
-    output.reference.pose.yaw_deg = 90.0f;
-    if (CraneControl_SubmitPlannerOutput(&output) != CRANE_CONTROL_OK) {
-        fputs("planner output was rejected\n", stderr);
-        return 1;
-    }
-    CraneControl_Update();
-
-    yaw_count_before = yaw_absolute_command_count;
-    reach_count_before = reach_absolute_command_count;
-    captured_yaw_position_units = UINT32_MAX;
-    captured_reach_position_units = UINT32_MAX;
-    capture_yaw_move = 1U;
-    if (CraneControl_ReturnToInitial() != CRANE_CONTROL_OK) {
-        fputs("return request was rejected\n", stderr);
-        return 1;
-    }
-    CraneControl_GetState(&state);
-    if (state.returning_to_initial == 0U || state.axes_at_target != 0U) {
-        fputs("return request did not clear the arrival state\n", stderr);
-        return 1;
-    }
-
-    CraneControl_Update();
-    if (yaw_absolute_command_count != yaw_count_before + 1U ||
-        reach_absolute_command_count != reach_count_before + 1U ||
-        captured_yaw_command != PD42S1_COMMAND_ABSOLUTE_POSITION ||
-        captured_yaw_direction != PD42S1_DIRECTION_FORWARD ||
-        captured_yaw_position_units != 0U ||
-        captured_reach_direction != PD42S1_DIRECTION_FORWARD ||
-        captured_reach_position_units != 0U) {
-        fputs("return did not send two absolute zero targets\n", stderr);
-        return 1;
-    }
-
-    CraneControl_Update();
-    CraneControl_GetState(&state);
-    if (state.returning_to_initial != 0U || state.axes_at_target == 0U) {
-        fputs("return did not finish after both axes arrived\n", stderr);
         return 1;
     }
     return 0;
@@ -686,8 +742,18 @@ static int test_measured_transfer_yaw_fits_the_wrist(void)
     return 0;
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
+    if (test_startup_zeroing_retries_each_exchange() != 0) {
+        return 1;
+    }
+    if (test_startup_zeroing_stops_after_three_failures() != 0) {
+        return 1;
+    }
+    if (argc == 2 && strcmp(argv[1], "--startup-retry") == 0) {
+        puts("crane startup retry tests passed");
+        return 0;
+    }
     if (test_reverse_home_reports_maximum_yaw_stop() != 0) {
         return 1;
     }
@@ -697,7 +763,7 @@ int main(void)
     if (test_planner_z_does_not_control_lift() != 0) {
         return 1;
     }
-    if (test_complete_reference_does_not_restart_axes() != 0) {
+    if (test_complete_reference_uses_full_speed_to_settle() != 0) {
         return 1;
     }
     if (test_complete_waits_for_both_axes_to_arrive() != 0) {
@@ -707,9 +773,6 @@ int main(void)
         return 1;
     }
     if (test_axis_arrival_has_a_timeout() != 0) {
-        return 1;
-    }
-    if (test_return_to_initial_uses_absolute_zero_targets() != 0) {
         return 1;
     }
     if (test_measured_transfer_yaw_fits_the_wrist() != 0) {

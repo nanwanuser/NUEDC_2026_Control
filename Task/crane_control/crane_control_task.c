@@ -2,6 +2,7 @@
 
 #include "FreeRTOS.h"
 #include "main.h"
+#include "mission.h"
 #include "task.h"
 
 /* The task period sets how often physical arrival is polled. */
@@ -31,7 +32,9 @@ void Robot_arm_ctrl_App(void *argument)
     (void)argument;
     CraneControl_LoadDefaultConfig(&config);
     CraneControl_CustomizeConfig(&config);
-    (void)CraneControl_Init(&config);
+    if (CraneControl_Init(&config) == CRANE_CONTROL_OK) {
+        Mission_SignalCraneReady();
+    }
     for (;;) {
         snapshot_planner_output(&output);
         if (output.plan_id != last_plan_id ||
