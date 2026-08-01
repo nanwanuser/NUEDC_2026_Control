@@ -12,14 +12,12 @@ extern "C" {
 
 #define VISION_PROTOCOL_VERSION               1U
 #define VISION_PROTOCOL_TYPE_FRAME            0x01U
-#define VISION_PROTOCOL_TYPE_ACK              0x80U
 #define VISION_PROTOCOL_HEADER_FIRST          0xAAU
 #define VISION_PROTOCOL_HEADER_SECOND         0x55U
 #define VISION_PROTOCOL_END_FIRST             0x0DU
 #define VISION_PROTOCOL_END_SECOND            0x0AU
 #define VISION_PROTOCOL_MAX_PAYLOAD_LENGTH     106U
 #define VISION_PROTOCOL_MAX_FRAME_LENGTH       118U
-#define VISION_PROTOCOL_ACK_FRAME_LENGTH       13U
 #define VISION_PROTOCOL_STABLE_FRAME_COUNT     3U
 #define VISION_PROTOCOL_COORD_TOLERANCE_MM     0.5f
 
@@ -33,13 +31,6 @@ typedef enum {
     VISION_PROTOCOL_RESULT_CRC_ERROR,
     VISION_PROTOCOL_RESULT_INVALID_DATA
 } VisionProtocolResult;
-
-typedef enum {
-    VISION_PROTOCOL_ACK_OK = 0,
-    VISION_PROTOCOL_ACK_ACCEPTED = 1,
-    VISION_PROTOCOL_ACK_INVALID = 2,
-    VISION_PROTOCOL_ACK_BUSY = 3
-} VisionProtocolAckStatus;
 
 typedef struct {
     uint16_t seq;
@@ -76,10 +67,6 @@ uint8_t VisionProtocolStabilizer_Add(
     VisionProtocolPacket *stable_packet);
 
 uint16_t VisionProtocol_Crc16(const uint8_t *data, size_t length);
-size_t VisionProtocol_EncodeAck(uint16_t seq,
-                                VisionProtocolAckStatus status,
-                                uint8_t *buffer,
-                                size_t capacity);
 
 #ifdef __cplusplus
 }
