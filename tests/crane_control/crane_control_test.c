@@ -20,6 +20,35 @@ static uint32_t captured_lift_immediate_count;
 static float captured_lift_angle_deg;
 static pd42s1_arrival_t yaw_arrival = PD42S1_ARRIVAL_REACHED;
 static pd42s1_arrival_t reach_arrival = PD42S1_ARRIVAL_REACHED;
+static uint8_t relative_failures[2];
+static uint8_t clear_failures[2];
+static uint8_t realtime_failures[2];
+static uint8_t absolute_zero_failures[2];
+static uint8_t relative_attempts[2];
+static uint8_t clear_attempts[2];
+static uint8_t realtime_attempts[2];
+static uint8_t absolute_zero_attempts[2];
+static uint32_t retry_delay_count;
+static uint8_t startup_timeout_mismatch;
+
+static uint8_t motor_index(uint8_t motor_id)
+{
+    return motor_id == PD42S1_MOTOR_1_ID ? 0U : 1U;
+}
+
+static void reset_startup_faults(void)
+{
+    (void)memset(relative_failures, 0, sizeof(relative_failures));
+    (void)memset(clear_failures, 0, sizeof(clear_failures));
+    (void)memset(realtime_failures, 0, sizeof(realtime_failures));
+    (void)memset(absolute_zero_failures, 0, sizeof(absolute_zero_failures));
+    (void)memset(relative_attempts, 0, sizeof(relative_attempts));
+    (void)memset(clear_attempts, 0, sizeof(clear_attempts));
+    (void)memset(realtime_attempts, 0, sizeof(realtime_attempts));
+    (void)memset(absolute_zero_attempts, 0, sizeof(absolute_zero_attempts));
+    retry_delay_count = 0U;
+    startup_timeout_mismatch = 0U;
+}
 
 uint32_t HAL_GetTick(void)
 {
@@ -28,6 +57,9 @@ uint32_t HAL_GetTick(void)
 
 void HAL_Delay(uint32_t delay_ms)
 {
+    if (delay_ms == 10U) {
+        ++retry_delay_count;
+    }
     fake_tick += delay_ms;
 }
 
@@ -85,8 +117,17 @@ max485_status_t pd42s1_move_absolute(uint8_t motor_id,
                                     uint16_t speed_rpm,
                                     uint32_t position_units)
 {
+    const uint8_t index = motor_index(motor_id);
+
     (void)acceleration;
     (void)speed_rpm;
+    if (position_units == 0U) {
+        ++absolute_zero_attempts[index];
+        if (absolute_zero_failures[index] != 0U) {
+            --absolute_zero_failures[index];
+            return MAX485_STATUS_INVALID_ARGUMENT;
+        }
+    }
     if (motor_id == PD42S1_MOTOR_1_ID) {
         ++yaw_absolute_command_count;
     } else if (motor_id == PD42S1_MOTOR_2_ID) {
@@ -108,8 +149,15 @@ max485_status_t pd42s1_move_relative(uint8_t motor_id,
                                     uint16_t speed_rpm,
                                     uint32_t position_units)
 {
+    const uint8_t index = motor_index(motor_id);
+
     (void)acceleration;
     (void)speed_rpm;
+    ++relative_attempts[index];
+    if (relative_failures[index] != 0U) {
+        --relative_failures[index];
+        return MAX485_STATUS_INVALID_ARGUMENT;
+    }
     if (capture_yaw_move != 0U && motor_id == PD42S1_MOTOR_1_ID) {
         captured_yaw_command = PD42S1_COMMAND_RELATIVE_POSITION;
         captured_yaw_direction = direction;
@@ -121,7 +169,13 @@ max485_status_t pd42s1_move_relative(uint8_t motor_id,
 
 max485_status_t pd42s1_clear_position(uint8_t motor_id)
 {
-    (void)motor_id;
+    const uint8_t index = motor_index(motor_id);
+
+    ++clear_attempts[index];
+    if (clear_failures[index] != 0U) {
+        --clear_failures[index];
+        return MAX485_STATUS_INVALID_ARGUMENT;
+    }
     return MAX485_STATUS_OK;
 }
 
@@ -143,8 +197,12 @@ max485_status_t pd42s1_receive_response(uint8_t motor_id,
                                        uint32_t timeout_ms)
 {
     (void)motor_id;
-    (void)command;
-    (void)timeout_ms;
+    if ((command == PD42S1_COMMAND_RELATIVE_POSITION ||
+         command == PD42S1_COMMAND_CLEAR_POSITION ||
+         command == PD42S1_COMMAND_ABSOLUTE_POSITION) &&
+        timeout_ms != 160U) {
+        startup_timeout_mismatch = 1U;
+    }
     *result = PD42S1_RESULT_SUCCESS;
     return MAX485_STATUS_OK;
 }
@@ -155,6 +213,46 @@ max485_status_t pd42s1_read_arrival_flag(uint8_t motor_id,
 {
     (void)timeout_ms;
     *arrival = motor_id == PD42S1_MOTOR_1_ID ? yaw_arrival : reach_arrival;
+    return MAX485_STATUS_OK;
+}
+
+max485_status_t pd42s1_read_realtime_position(uint8_t motor_id,
+                                              int32_t *position_units,
+                                              uint32_t timeout_ms)
+{
+    const uint8_t index = motor_index(motor_id);
+
+    if (timeout_ms != 160U) {
+        startup_timeout_mismatch = 1U;
+    }
+    ++realtime_attempts[index];
+    if (realtime_failures[index] != 0U) {
+        --realtime_failures[index];
+        return MAX485_STATUS_INVALID_ARGUMENT;
+    }
+    *position_units = 0;
+    return MAX485_STATUS_OK;
+}
+
+max485_status_t pd42s1_read_position_error(uint8_t motor_id,
+                                           int32_t *position_error_units,
+                                           uint32_t timeout_ms)
+{
+    (void)motor_id;
+    (void)timeout_ms;
+    *position_error_units = 0;
+    return MAX485_STATUS_OK;
+}
+
+max485_status_t pd42s1_read_work_mode(uint8_t motor_id,
+                                     pd42s1_work_mode_t *mode,
+                                     uint32_t timeout_ms)
+{
+    (void)motor_id;
+    if (timeout_ms != 160U) {
+        startup_timeout_mismatch = 1U;
+    }
+    *mode = PD42S1_WORK_MODE_COMMUNICATION_POSITION;
     return MAX485_STATUS_OK;
 }
 
@@ -204,6 +302,58 @@ static CraneControlConfig test_config(void)
     return config;
 }
 
+static int test_startup_zeroing_retries_each_exchange(void)
+{
+    CraneControlConfig config = test_config();
+    CraneControlState state;
+
+    reset_startup_faults();
+    relative_failures[0] = 2U;
+    clear_failures[1] = 2U;
+    realtime_failures[0] = 2U;
+    absolute_zero_failures[1] = 2U;
+
+    if (CraneControl_Init(&config) != CRANE_CONTROL_OK) {
+        fputs("startup retry did not recover on the third attempt\n", stderr);
+        return 1;
+    }
+    CraneControl_GetState(&state);
+    if (state.initialized == 0U ||
+        relative_attempts[0] != 3U || relative_attempts[1] != 1U ||
+        clear_attempts[0] != 1U || clear_attempts[1] != 3U ||
+        realtime_attempts[0] != 3U || realtime_attempts[1] != 1U ||
+        absolute_zero_attempts[0] != 1U ||
+        absolute_zero_attempts[1] != 3U ||
+        retry_delay_count != 8U || startup_timeout_mismatch != 0U) {
+        fputs("startup exchanges did not retry independently with 10 ms gaps\n",
+              stderr);
+        return 1;
+    }
+    return 0;
+}
+
+static int test_startup_zeroing_stops_after_three_failures(void)
+{
+    CraneControlConfig config = test_config();
+    CraneControlState state;
+
+    reset_startup_faults();
+    realtime_failures[1] = 3U;
+
+    if (CraneControl_Init(&config) != CRANE_CONTROL_TRANSPORT_ERROR) {
+        fputs("startup did not report an exhausted readback retry\n", stderr);
+        return 1;
+    }
+    CraneControl_GetState(&state);
+    if (state.initialized != 0U || realtime_attempts[1] != 3U ||
+        retry_delay_count != 2U) {
+        fputs("startup retry exceeded three attempts or used wrong delays\n",
+              stderr);
+        return 1;
+    }
+    return 0;
+}
+
 static int test_reverse_home_reports_maximum_yaw_stop(void)
 {
     CraneControlConfig config = test_config();
@@ -251,6 +401,8 @@ static int test_yaw_commands_absolute_positions_from_the_homed_datum(void)
     output.phase = TRAJECTORY_PHASE_APPROACH;
     output.state = TRAJECTORY_STATE_RUNNING;
     output.result = TRAJECTORY_RESULT_OK;
+    output.waypoint_count = 2U;
+    output.waypoint_index = 1U;
     output.reference.pose.x_mm = 0.0f;
     output.reference.pose.y_mm = 100.0f;
     output.reference.pose.z_mm = 0.0f;
@@ -318,6 +470,8 @@ static int test_planner_z_does_not_control_lift(void)
     output.phase = TRAJECTORY_PHASE_APPROACH;
     output.state = TRAJECTORY_STATE_RUNNING;
     output.result = TRAJECTORY_RESULT_OK;
+    output.waypoint_count = 2U;
+    output.waypoint_index = 1U;
     output.reference.pose.x_mm = 0.0f;
     output.reference.pose.y_mm = 100.0f;
     output.reference.pose.z_mm = 0.0f;
@@ -370,6 +524,8 @@ static int test_complete_reference_uses_full_speed_to_settle(void)
     output.phase = TRAJECTORY_PHASE_APPROACH;
     output.state = TRAJECTORY_STATE_RUNNING;
     output.result = TRAJECTORY_RESULT_OK;
+    output.waypoint_count = 2U;
+    output.waypoint_index = 1U;
     output.reference.pose.x_mm = 0.0f;
     output.reference.pose.y_mm = 100.0f;
     output.reference.pose.z_mm = 0.0f;
@@ -585,8 +741,18 @@ static int test_measured_transfer_yaw_fits_the_wrist(void)
     return 0;
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
+    if (test_startup_zeroing_retries_each_exchange() != 0) {
+        return 1;
+    }
+    if (test_startup_zeroing_stops_after_three_failures() != 0) {
+        return 1;
+    }
+    if (argc == 2 && strcmp(argv[1], "--startup-retry") == 0) {
+        puts("crane startup retry tests passed");
+        return 0;
+    }
     if (test_reverse_home_reports_maximum_yaw_stop() != 0) {
         return 1;
     }

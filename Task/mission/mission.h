@@ -133,6 +133,10 @@ typedef struct {
 
 void Mission_Init(void);
 
+/* Emit the one-shot startup indication after the crane has homed and verified
+   both drives are in communication position mode. */
+void Mission_SignalCraneReady(void);
+
 /* Same effect as pressing the matching key, for host or debug triggering. */
 uint8_t Mission_Start(MissionId mission);
 void Mission_Abort(void);

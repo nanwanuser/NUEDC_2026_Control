@@ -38,9 +38,12 @@
  * 160 ms, long enough to rule out a stray timeout and short enough that a
  * genuinely dead bus still stops the arm well inside the time limit. */
 #define CRANE_MAX_CONSECUTIVE_BUS_FAULTS  8U
-/* Tries per drive when zeroing at startup. Same reasoning as above, except that
-   startup has no next tick to fall back on, so the retry has to happen here. */
-#define CRANE_ZERO_ATTEMPTS               3U
+/* Startup has no next control tick to restate these frame-setting commands. */
+#define CRANE_STARTUP_COMM_ATTEMPTS       3U
+#define CRANE_STARTUP_COMM_RETRY_DELAY_MS 10U
+#define CRANE_STARTUP_RESPONSE_TIMEOUT_MS 160U
+#define CRANE_POSITION_MODE_POLL_ATTEMPTS 10U
+#define CRANE_POSITION_MODE_POLL_DELAY_MS 20U
 /* How long startup holds both axes against their stops. Nothing reports arrival in
    torque mode, so this is not a timeout to be beaten but the whole duration of the
    datum move, and it has to cover the worst case: an axis starting from the far end
@@ -465,12 +468,14 @@ static CraneControlStatus command_axis(uint8_t motor_id,
  * reporting: startup has no next tick to restate anything on, and the calls that
  * use this are the ones that decide what frame the run is measured in. */
 static CraneControlStatus send_simple_command(uint8_t motor_id,
-                                              pd42s1_command_t command)
+                                              pd42s1_command_t command,
+                                              uint32_t retry_delay_ms,
+                                              uint32_t response_timeout_ms)
 {
     CraneControlStatus worst = CRANE_CONTROL_OK;
     uint8_t attempt;
 
-    for (attempt = 0U; attempt < CRANE_ZERO_ATTEMPTS; ++attempt) {
+    for (attempt = 0U; attempt < CRANE_STARTUP_COMM_ATTEMPTS; ++attempt) {
         pd42s1_result_t result;
         max485_status_t status;
 
@@ -489,24 +494,83 @@ static CraneControlStatus send_simple_command(uint8_t motor_id,
         }
         if (status != MAX485_STATUS_OK) {
             worst = CRANE_CONTROL_TRANSPORT_ERROR;
-            continue;
-        }
-        if (s_config.expect_stepper_response == 0U) {
+        } else if (s_config.expect_stepper_response == 0U) {
             return CRANE_CONTROL_OK;
+        } else {
+            status = pd42s1_receive_response(motor_id, command, &result,
+                                            response_timeout_ms);
+            if (status != MAX485_STATUS_OK) {
+                worst = CRANE_CONTROL_TRANSPORT_ERROR;
+            } else if (result != PD42S1_RESULT_SUCCESS) {
+                worst = CRANE_CONTROL_DRIVE_REJECTED;
+            } else {
+                return CRANE_CONTROL_OK;
+            }
         }
-        status = pd42s1_receive_response(motor_id, command, &result,
-                                        PD42S1_UART_TIMEOUT_MS);
-        if (status != MAX485_STATUS_OK) {
-            worst = CRANE_CONTROL_TRANSPORT_ERROR;
-            continue;
+        if ((uint8_t)(attempt + 1U) < CRANE_STARTUP_COMM_ATTEMPTS &&
+            retry_delay_ms != 0U) {
+            HAL_Delay(retry_delay_ms);
         }
-        if (result != PD42S1_RESULT_SUCCESS) {
-            worst = CRANE_CONTROL_DRIVE_REJECTED;
-            continue;
-        }
-        return CRANE_CONTROL_OK;
     }
     return worst;
+}
+
+static CraneControlStatus read_zero_position(uint8_t motor_id)
+{
+    CraneControlStatus status = CRANE_CONTROL_OK;
+    uint8_t attempt;
+
+    for (attempt = 0U; attempt < CRANE_STARTUP_COMM_ATTEMPTS; ++attempt) {
+        int32_t position_units;
+        const max485_status_t bus_status = pd42s1_read_realtime_position(
+            motor_id, &position_units, CRANE_STARTUP_RESPONSE_TIMEOUT_MS);
+
+        if (bus_status != MAX485_STATUS_OK) {
+            status = CRANE_CONTROL_TRANSPORT_ERROR;
+        } else if (position_units_are_within_threshold(position_units) == 0U) {
+            status = CRANE_CONTROL_DRIVE_REJECTED;
+        } else {
+            return CRANE_CONTROL_OK;
+        }
+        if ((uint8_t)(attempt + 1U) < CRANE_STARTUP_COMM_ATTEMPTS) {
+            HAL_Delay(CRANE_STARTUP_COMM_RETRY_DELAY_MS);
+        }
+    }
+    return status;
+}
+
+static CraneControlStatus wait_for_position_mode(uint8_t motor_id)
+{
+    CraneControlStatus status = CRANE_CONTROL_DRIVE_REJECTED;
+    uint8_t attempt;
+
+    for (attempt = 0U; attempt < CRANE_POSITION_MODE_POLL_ATTEMPTS; ++attempt) {
+        pd42s1_work_mode_t mode;
+        const max485_status_t bus_status = pd42s1_read_work_mode(
+            motor_id, &mode, CRANE_STARTUP_RESPONSE_TIMEOUT_MS);
+
+        if (bus_status != MAX485_STATUS_OK) {
+            status = CRANE_CONTROL_TRANSPORT_ERROR;
+        } else if (mode == PD42S1_WORK_MODE_COMMUNICATION_POSITION) {
+            return CRANE_CONTROL_OK;
+        } else {
+            status = CRANE_CONTROL_DRIVE_REJECTED;
+        }
+        if ((uint8_t)(attempt + 1U) < CRANE_POSITION_MODE_POLL_ATTEMPTS) {
+            HAL_Delay(CRANE_POSITION_MODE_POLL_DELAY_MS);
+        }
+    }
+    return status;
+}
+
+static CraneControlStatus wait_for_axes_position_mode(void)
+{
+    CraneControlStatus status = wait_for_position_mode(PD42S1_MOTOR_1_ID);
+
+    if (status != CRANE_CONTROL_OK) {
+        return status;
+    }
+    return wait_for_position_mode(PD42S1_MOTOR_2_ID);
 }
 
 /* Makes both drives read zero where the mechanism is standing right now, and
@@ -523,7 +587,9 @@ static CraneControlStatus clear_axis_positions(void)
     for (index = 0U; index < 2U; ++index) {
         CraneControlStatus status =
             send_simple_command(motor_ids[index],
-                                PD42S1_COMMAND_CLEAR_POSITION);
+                                PD42S1_COMMAND_CLEAR_POSITION,
+                                CRANE_STARTUP_COMM_RETRY_DELAY_MS,
+                                CRANE_STARTUP_RESPONSE_TIMEOUT_MS);
 
         if (status != CRANE_CONTROL_OK) {
             worst = status;
@@ -533,15 +599,10 @@ static CraneControlStatus clear_axis_positions(void)
         return worst;
     }
     for (index = 0U; index < 2U; ++index) {
-        int32_t position_units;
-        const max485_status_t status = pd42s1_read_realtime_position(
-            motor_ids[index], &position_units, PD42S1_UART_TIMEOUT_MS);
+        const CraneControlStatus status = read_zero_position(motor_ids[index]);
 
-        if (status != MAX485_STATUS_OK) {
-            return CRANE_CONTROL_TRANSPORT_ERROR;
-        }
-        if (position_units_are_within_threshold(position_units) == 0U) {
-            return CRANE_CONTROL_DRIVE_REJECTED;
+        if (status != CRANE_CONTROL_OK) {
+            return status;
         }
     }
     s_yaw_position.position_units = 0;
@@ -574,32 +635,46 @@ static CraneControlStatus set_axis_position_mode_zero(
                                          ? s_config.yaw_acceleration
                                          : s_config.reach_acceleration;
         CraneControlStatus status = CRANE_CONTROL_OK;
-        max485_status_t bus_status;
+        uint8_t attempt;
 
-        if (command == PD42S1_COMMAND_RELATIVE_POSITION) {
-            bus_status = pd42s1_move_relative(
-                motor_id, PD42S1_DIRECTION_FORWARD,
-                acceleration, speed_rpm, 0U);
-        } else if (command == PD42S1_COMMAND_ABSOLUTE_POSITION) {
-            bus_status = pd42s1_move_absolute(
-                motor_id, PD42S1_DIRECTION_FORWARD,
-                acceleration, speed_rpm, 0U);
-        } else {
-            return CRANE_CONTROL_INVALID_CONFIG;
-        }
+        for (attempt = 0U; attempt < CRANE_STARTUP_COMM_ATTEMPTS; ++attempt) {
+            max485_status_t bus_status;
 
-        if (bus_status != MAX485_STATUS_OK) {
-            status = CRANE_CONTROL_TRANSPORT_ERROR;
-        } else if (s_config.expect_stepper_response != 0U) {
-            pd42s1_result_t result;
+            if (command == PD42S1_COMMAND_RELATIVE_POSITION) {
+                bus_status = pd42s1_move_relative(
+                    motor_id, PD42S1_DIRECTION_FORWARD,
+                    acceleration, speed_rpm, 0U);
+            } else if (command == PD42S1_COMMAND_ABSOLUTE_POSITION) {
+                bus_status = pd42s1_move_absolute(
+                    motor_id, PD42S1_DIRECTION_FORWARD,
+                    acceleration, speed_rpm, 0U);
+            } else {
+                return CRANE_CONTROL_INVALID_CONFIG;
+            }
 
-            bus_status = pd42s1_receive_response(
-                motor_id, command, &result,
-                PD42S1_UART_TIMEOUT_MS);
             if (bus_status != MAX485_STATUS_OK) {
                 status = CRANE_CONTROL_TRANSPORT_ERROR;
-            } else if (result != PD42S1_RESULT_SUCCESS) {
-                status = CRANE_CONTROL_DRIVE_REJECTED;
+            } else if (s_config.expect_stepper_response != 0U) {
+                pd42s1_result_t result;
+
+                bus_status = pd42s1_receive_response(
+                    motor_id, command, &result,
+                    CRANE_STARTUP_RESPONSE_TIMEOUT_MS);
+                if (bus_status != MAX485_STATUS_OK) {
+                    status = CRANE_CONTROL_TRANSPORT_ERROR;
+                } else if (result != PD42S1_RESULT_SUCCESS) {
+                    status = CRANE_CONTROL_DRIVE_REJECTED;
+                } else {
+                    status = CRANE_CONTROL_OK;
+                }
+            } else {
+                status = CRANE_CONTROL_OK;
+            }
+            if (status == CRANE_CONTROL_OK) {
+                break;
+            }
+            if ((uint8_t)(attempt + 1U) < CRANE_STARTUP_COMM_ATTEMPTS) {
+                HAL_Delay(CRANE_STARTUP_COMM_RETRY_DELAY_MS);
             }
         }
         if (status != CRANE_CONTROL_OK) {
@@ -896,7 +971,8 @@ static CraneControlStatus push_axis(uint8_t motor_id,
        the push from moving the axis at all, and unlike a homing seek there is no
        state to read back that would say so. Its own outcome is not decisive: on a
        drive with nothing latched it is a no-op. */
-    (void)send_simple_command(motor_id, PD42S1_COMMAND_CLEAR_STATE);
+    (void)send_simple_command(motor_id, PD42S1_COMMAND_CLEAR_STATE, 0U,
+                              PD42S1_UART_TIMEOUT_MS);
     return send_torque(motor_id, direction, s_config.home_torque_current_ma);
 }
 
@@ -918,7 +994,8 @@ static CraneControlStatus release_axis(uint8_t motor_id,
     }
     {
         const CraneControlStatus cleared =
-            send_simple_command(motor_id, PD42S1_COMMAND_CLEAR_STATE);
+            send_simple_command(motor_id, PD42S1_COMMAND_CLEAR_STATE, 0U,
+                                PD42S1_UART_TIMEOUT_MS);
 
         if (status == CRANE_CONTROL_OK) {
             status = cleared;
@@ -993,6 +1070,10 @@ CraneControlStatus CraneControl_Home(uint32_t push_ms)
     /* A zero-step relative command exits communication torque mode without
        moving the mechanism. This mode transition is required before 0xF8. */
     status = set_axis_position_mode_zero(PD42S1_COMMAND_RELATIVE_POSITION);
+    if (status != CRANE_CONTROL_OK) {
+        return status;
+    }
+    status = wait_for_axes_position_mode();
     if (status != CRANE_CONTROL_OK) {
         return status;
     }

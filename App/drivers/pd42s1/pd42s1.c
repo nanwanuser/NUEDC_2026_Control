@@ -4,6 +4,7 @@
 
 #define PD42S1_TORQUE_PAYLOAD_LENGTH 3U
 #define PD42S1_POSITION_PAYLOAD_LENGTH 8U
+#define PD42S1_DRIVER_PARAMETERS_PAYLOAD_LENGTH 32U
 /* Mode, direction, four speed bytes, two current bytes. */
 #define PD42S1_HOME_PARAMETERS_PAYLOAD_LENGTH 8U
 /* One int32 position. */
@@ -336,6 +337,37 @@ max485_status_t pd42s1_read_arrival_flag(uint8_t motor_id,
         return MAX485_STATUS_UNEXPECTED_FRAME;
     }
     *arrival = (pd42s1_arrival_t)frame.payload[1];
+    return MAX485_STATUS_OK;
+}
+
+max485_status_t pd42s1_read_work_mode(uint8_t motor_id,
+                                     pd42s1_work_mode_t *mode,
+                                     uint32_t timeout_ms)
+{
+    max485_frame_t frame;
+    max485_status_t status;
+
+    if (!pd42s1_is_supported_motor(motor_id) || mode == NULL) {
+        return MAX485_STATUS_INVALID_ARGUMENT;
+    }
+    status = max485_send_frame(motor_id,
+                               PD42S1_COMMAND_READ_DRIVER_PARAMETERS,
+                               NULL, 0U, PD42S1_UART_TIMEOUT_MS);
+    if (status != MAX485_STATUS_OK) {
+        return status;
+    }
+    status = max485_receive_frame(&frame, timeout_ms);
+    if (status != MAX485_STATUS_OK) {
+        return status;
+    }
+    if (frame.address != motor_id ||
+        frame.function != (uint8_t)PD42S1_COMMAND_READ_DRIVER_PARAMETERS ||
+        frame.payload_length != PD42S1_DRIVER_PARAMETERS_PAYLOAD_LENGTH ||
+        frame.payload[0] != PD42S1_RESULT_SUCCESS ||
+        frame.payload[1] > (uint8_t)PD42S1_WORK_MODE_HOME) {
+        return MAX485_STATUS_UNEXPECTED_FRAME;
+    }
+    *mode = (pd42s1_work_mode_t)frame.payload[1];
     return MAX485_STATUS_OK;
 }
 
