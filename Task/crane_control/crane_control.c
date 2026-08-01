@@ -47,6 +47,7 @@
 #define CRANE_AXIS_ZERO_ATTEMPTS           3U
 #define CRANE_AXIS_ZERO_RETRY_DELAY_MS     100U
 #define CRANE_CLEAR_VERIFY_DELAY_MS        100U
+#define CRANE_FINAL_WAYPOINT_SETTLE_MS     2000U
 /* How long startup holds both axes against their stops. Nothing reports arrival in
    torque mode, so this is not a timeout to be beaten but the whole duration of the
    datum move, and it has to cover the worst case: an axis starting from the far end
@@ -70,7 +71,10 @@ static CraneMotorPosition s_yaw_position;
 static CraneMotorPosition s_reach_position;
 static uint8_t s_consecutive_bus_faults;
 static uint8_t s_axis_target_active;
+static uint8_t s_axis_settle_required;
+static uint8_t s_axis_settle_active;
 static uint32_t s_arrival_wait_start_tick;
+static uint32_t s_axis_settle_start_tick;
 /* Where each drive's zero sits in crane coordinates. Without homing the only
    available datum is "wherever the mechanism was standing at reset", so this holds
    the park pose and the mechanism has to actually be parked. Homing replaces it
@@ -755,6 +759,7 @@ static CraneControlStatus update_arrival_state(void)
     int32_t yaw_error_units;
     int32_t reach_error_units;
     max485_status_t status;
+    uint8_t axes_within_tolerance;
 
     if (s_axis_target_active == 0U) {
         return CRANE_CONTROL_OK;
@@ -772,6 +777,7 @@ static CraneControlStatus update_arrival_state(void)
                                         &yaw_error_units,
                                         PD42S1_UART_TIMEOUT_MS);
     if (status != MAX485_STATUS_OK) {
+        s_axis_settle_active = 0U;
         publish_arrival_flags(0U, 0U);
         return CRANE_CONTROL_TRANSPORT_ERROR;
     }
@@ -779,14 +785,40 @@ static CraneControlStatus update_arrival_state(void)
                                         &reach_error_units,
                                         PD42S1_UART_TIMEOUT_MS);
     if (status != MAX485_STATUS_OK) {
+        s_axis_settle_active = 0U;
         publish_arrival_flags(position_units_are_within_threshold(yaw_error_units),
                               0U);
         return CRANE_CONTROL_TRANSPORT_ERROR;
     }
     publish_position_errors(yaw_error_units, reach_error_units);
-    if (position_units_are_within_threshold(yaw_error_units) != 0U &&
-        position_units_are_within_threshold(reach_error_units) != 0U) {
+    axes_within_tolerance = (uint8_t)(
+        position_units_are_within_threshold(yaw_error_units) != 0U &&
+        position_units_are_within_threshold(reach_error_units) != 0U);
+    if (axes_within_tolerance != 0U && s_axis_settle_required != 0U) {
+        const uint32_t now_tick = HAL_GetTick();
+
+        if (s_axis_settle_active == 0U) {
+            s_axis_settle_start_tick = now_tick;
+            s_axis_settle_active = 1U;
+        }
+        if ((uint32_t)(now_tick - s_axis_settle_start_tick) <
+            CRANE_FINAL_WAYPOINT_SETTLE_MS) {
+            taskENTER_CRITICAL();
+            s_state.axes_at_target = 0U;
+            taskEXIT_CRITICAL();
+        } else {
+            axes_within_tolerance = 1U;
+        }
+    } else if (axes_within_tolerance == 0U) {
+        s_axis_settle_active = 0U;
+    }
+    if (axes_within_tolerance != 0U &&
+        (s_axis_settle_required == 0U ||
+         (uint32_t)(HAL_GetTick() - s_axis_settle_start_tick) >=
+             CRANE_FINAL_WAYPOINT_SETTLE_MS)) {
         s_axis_target_active = 0U;
+        s_axis_settle_required = 0U;
+        s_axis_settle_active = 0U;
         taskENTER_CRITICAL();
         s_state.returning_to_initial = 0U;
         taskEXIT_CRITICAL();
@@ -795,6 +827,8 @@ static CraneControlStatus update_arrival_state(void)
     if ((uint32_t)(HAL_GetTick() - s_arrival_wait_start_tick) >=
         s_config.arrival_timeout_ms) {
         s_axis_target_active = 0U;
+        s_axis_settle_required = 0U;
+        s_axis_settle_active = 0U;
         taskENTER_CRITICAL();
         s_state.returning_to_initial = 0U;
         taskEXIT_CRITICAL();
@@ -838,10 +872,17 @@ static CraneControlStatus apply_output(const RoutePlanningOutput *output)
             s_active_output = *output;
             s_arrival_wait_start_tick = HAL_GetTick();
             s_axis_target_active = 1U;
+            s_axis_settle_required = (uint8_t)(
+                output->waypoint_count != 0U &&
+                (uint8_t)(output->waypoint_index + 1U) ==
+                    output->waypoint_count);
+            s_axis_settle_active = 0U;
         }
     } else {
         status = CRANE_CONTROL_OK;
         s_axis_target_active = 0U;
+        s_axis_settle_required = 0U;
+        s_axis_settle_active = 0U;
     }
     if (status == CRANE_CONTROL_OK &&
         Servo_SetAngle(SERVO_END_YAW,
@@ -958,6 +999,8 @@ static CraneControlStatus apply_return_to_initial(void)
     if (status == CRANE_CONTROL_OK) {
         s_arrival_wait_start_tick = HAL_GetTick();
         s_axis_target_active = 1U;
+        s_axis_settle_required = 0U;
+        s_axis_settle_active = 0U;
         taskENTER_CRITICAL();
         s_state.lift_position = CRANE_LIFT_RAISED;
         taskEXIT_CRITICAL();
@@ -992,7 +1035,10 @@ CraneControlStatus CraneControl_Init(const CraneControlConfig *config)
     s_output_pending = 0U;
     s_consecutive_bus_faults = 0U;
     s_axis_target_active = 0U;
+    s_axis_settle_required = 0U;
+    s_axis_settle_active = 0U;
     s_arrival_wait_start_tick = 0U;
+    s_axis_settle_start_tick = 0U;
     s_state.status = CRANE_CONTROL_OK;
     s_state.target.boom_yaw_deg = s_config.startup_boom_yaw_deg;
     s_state.target.z_mm = s_config.max_z_mm;
