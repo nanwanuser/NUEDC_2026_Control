@@ -31,7 +31,9 @@ typedef enum {
     MISSION_STATE_RUNNING,
     MISSION_STATE_COMPLETE,
     MISSION_STATE_FAILED,
-    MISSION_STATE_TIMEOUT
+    MISSION_STATE_TIMEOUT,
+    /* Puzzle complete; completion tone is finishing or the axes are returning. */
+    MISSION_STATE_RETURNING
 } MissionState;
 
 /* Why an acquisition failed, beeped out after the failure tone. The numeric

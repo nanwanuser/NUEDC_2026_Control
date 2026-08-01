@@ -13,6 +13,8 @@ static pd42s1_command_t captured_yaw_command;
 static pd42s1_direction_t captured_yaw_direction;
 static uint16_t captured_yaw_speed_rpm;
 static uint32_t captured_yaw_position_units;
+static pd42s1_direction_t captured_reach_direction;
+static uint32_t captured_reach_position_units;
 static uint32_t yaw_absolute_command_count;
 static uint32_t reach_absolute_command_count;
 static uint32_t captured_lift_command_count;
@@ -91,6 +93,8 @@ max485_status_t pd42s1_move_absolute(uint8_t motor_id,
         ++yaw_absolute_command_count;
     } else if (motor_id == PD42S1_MOTOR_2_ID) {
         ++reach_absolute_command_count;
+        captured_reach_direction = direction;
+        captured_reach_position_units = position_units;
     }
     if (capture_yaw_move != 0U && motor_id == PD42S1_MOTOR_1_ID) {
         captured_yaw_command = PD42S1_COMMAND_ABSOLUTE_POSITION;
@@ -155,6 +159,28 @@ max485_status_t pd42s1_read_arrival_flag(uint8_t motor_id,
 {
     (void)timeout_ms;
     *arrival = motor_id == PD42S1_MOTOR_1_ID ? yaw_arrival : reach_arrival;
+    return MAX485_STATUS_OK;
+}
+
+max485_status_t pd42s1_read_position_error(uint8_t motor_id,
+                                           int32_t *position_units,
+                                           uint32_t timeout_ms)
+{
+    const pd42s1_arrival_t arrival =
+        motor_id == PD42S1_MOTOR_1_ID ? yaw_arrival : reach_arrival;
+
+    (void)timeout_ms;
+    *position_units = arrival == PD42S1_ARRIVAL_REACHED ? 0 : 1000;
+    return MAX485_STATUS_OK;
+}
+
+max485_status_t pd42s1_read_realtime_position(uint8_t motor_id,
+                                              int32_t *position_units,
+                                              uint32_t timeout_ms)
+{
+    (void)motor_id;
+    (void)timeout_ms;
+    *position_units = 0;
     return MAX485_STATUS_OK;
 }
 
@@ -251,6 +277,8 @@ static int test_yaw_commands_absolute_positions_from_the_homed_datum(void)
     output.phase = TRAJECTORY_PHASE_APPROACH;
     output.state = TRAJECTORY_STATE_RUNNING;
     output.result = TRAJECTORY_RESULT_OK;
+    output.waypoint_index = 1U;
+    output.waypoint_count = 2U;
     output.reference.pose.x_mm = 0.0f;
     output.reference.pose.y_mm = 100.0f;
     output.reference.pose.z_mm = 0.0f;
@@ -318,6 +346,8 @@ static int test_planner_z_does_not_control_lift(void)
     output.phase = TRAJECTORY_PHASE_APPROACH;
     output.state = TRAJECTORY_STATE_RUNNING;
     output.result = TRAJECTORY_RESULT_OK;
+    output.waypoint_index = 1U;
+    output.waypoint_count = 2U;
     output.reference.pose.x_mm = 0.0f;
     output.reference.pose.y_mm = 100.0f;
     output.reference.pose.z_mm = 0.0f;
@@ -355,10 +385,12 @@ static int test_planner_z_does_not_control_lift(void)
     return 0;
 }
 
-static int test_complete_reference_uses_full_speed_to_settle(void)
+static int test_complete_reference_does_not_restart_axes(void)
 {
     CraneControlConfig config = test_config();
     RoutePlanningOutput output;
+    uint32_t yaw_count_before;
+    uint32_t reach_count_before;
 
     if (CraneControl_Init(&config) != CRANE_CONTROL_OK) {
         fputs("CraneControl_Init failed\n", stderr);
@@ -370,6 +402,8 @@ static int test_complete_reference_uses_full_speed_to_settle(void)
     output.phase = TRAJECTORY_PHASE_APPROACH;
     output.state = TRAJECTORY_STATE_RUNNING;
     output.result = TRAJECTORY_RESULT_OK;
+    output.waypoint_index = 1U;
+    output.waypoint_count = 2U;
     output.reference.pose.x_mm = 0.0f;
     output.reference.pose.y_mm = 100.0f;
     output.reference.pose.z_mm = 0.0f;
@@ -382,20 +416,21 @@ static int test_complete_reference_uses_full_speed_to_settle(void)
     CraneControl_Update();
 
     output.state = TRAJECTORY_STATE_COMPLETE;
-    captured_yaw_speed_rpm = 0U;
+    yaw_count_before = yaw_absolute_command_count;
+    reach_count_before = reach_absolute_command_count;
     capture_yaw_move = 1U;
     if (CraneControl_SubmitPlannerOutput(&output) != CRANE_CONTROL_OK) {
         fputs("complete endpoint reference was rejected\n", stderr);
         return 1;
     }
     CraneControl_Update();
-    if (capture_yaw_move != 0U || captured_yaw_speed_rpm != config.yaw_speed_rpm) {
-        fprintf(stderr,
-                "complete yaw speed %u RPM, expected %u RPM\n",
-                (unsigned)captured_yaw_speed_rpm,
-                (unsigned)config.yaw_speed_rpm);
+    if (capture_yaw_move == 0U ||
+        yaw_absolute_command_count != yaw_count_before ||
+        reach_absolute_command_count != reach_count_before) {
+        fputs("complete output restarted an already arrived axis\n", stderr);
         return 1;
     }
+    capture_yaw_move = 0U;
     return 0;
 }
 
@@ -415,8 +450,10 @@ static int test_complete_waits_for_both_axes_to_arrive(void)
     (void)memset(&output, 0, sizeof(output));
     output.plan_id = 7U;
     output.phase = TRAJECTORY_PHASE_APPROACH;
-    output.state = TRAJECTORY_STATE_COMPLETE;
+    output.state = TRAJECTORY_STATE_RUNNING;
     output.result = TRAJECTORY_RESULT_OK;
+    output.waypoint_index = 1U;
+    output.waypoint_count = 2U;
     output.reference.pose.x_mm = 0.0f;
     output.reference.pose.y_mm = 100.0f;
     output.reference.pose.z_mm = 0.0f;
@@ -429,6 +466,7 @@ static int test_complete_waits_for_both_axes_to_arrive(void)
         return 1;
     }
     CraneControl_Update();
+    CraneControl_Update();
     CraneControl_GetState(&state);
     yaw_commands_after_first_complete = yaw_absolute_command_count;
     reach_commands_after_first_complete = reach_absolute_command_count;
@@ -439,10 +477,6 @@ static int test_complete_waits_for_both_axes_to_arrive(void)
     }
 
     reach_arrival = PD42S1_ARRIVAL_REACHED;
-    if (CraneControl_SubmitPlannerOutput(&output) != CRANE_CONTROL_OK) {
-        fputs("repeated complete output was rejected\n", stderr);
-        return 1;
-    }
     CraneControl_Update();
     CraneControl_GetState(&state);
     if (yaw_absolute_command_count != yaw_commands_after_first_complete ||
@@ -512,8 +546,10 @@ static int test_axis_arrival_has_a_timeout(void)
     (void)memset(&output, 0, sizeof(output));
     output.plan_id = 9U;
     output.phase = TRAJECTORY_PHASE_TRANSFER;
-    output.state = TRAJECTORY_STATE_COMPLETE;
+    output.state = TRAJECTORY_STATE_RUNNING;
     output.result = TRAJECTORY_RESULT_OK;
+    output.waypoint_index = 1U;
+    output.waypoint_count = 2U;
     output.reference.pose.x_mm = 0.0f;
     output.reference.pose.y_mm = 100.0f;
     output.reference.pose.z_mm = 0.0f;
@@ -524,7 +560,6 @@ static int test_axis_arrival_has_a_timeout(void)
     (void)CraneControl_SubmitPlannerOutput(&output);
     CraneControl_Update();
     fake_tick += config.arrival_timeout_ms;
-    (void)CraneControl_SubmitPlannerOutput(&output);
     CraneControl_Update();
     CraneControl_GetState(&state);
     yaw_arrival = PD42S1_ARRIVAL_REACHED;
@@ -534,6 +569,72 @@ static int test_axis_arrival_has_a_timeout(void)
         fprintf(stderr, "arrival timeout status %u, expected %u\n",
                 (unsigned)state.status,
                 (unsigned)CRANE_CONTROL_ARRIVAL_TIMEOUT);
+        return 1;
+    }
+    return 0;
+}
+
+static int test_return_to_initial_uses_absolute_zero_targets(void)
+{
+    CraneControlConfig config = test_config();
+    RoutePlanningOutput output;
+    CraneControlState state;
+    uint32_t yaw_count_before;
+    uint32_t reach_count_before;
+
+    if (CraneControl_Init(&config) != CRANE_CONTROL_OK) {
+        fputs("CraneControl_Init failed\n", stderr);
+        return 1;
+    }
+
+    (void)memset(&output, 0, sizeof(output));
+    output.plan_id = 10U;
+    output.phase = TRAJECTORY_PHASE_TRANSFER;
+    output.state = TRAJECTORY_STATE_RUNNING;
+    output.result = TRAJECTORY_RESULT_OK;
+    output.waypoint_index = 1U;
+    output.waypoint_count = 2U;
+    output.reference.pose.x_mm = 0.0f;
+    output.reference.pose.y_mm = 100.0f;
+    output.reference.pose.z_mm = 0.0f;
+    output.reference.pose.yaw_deg = 90.0f;
+    if (CraneControl_SubmitPlannerOutput(&output) != CRANE_CONTROL_OK) {
+        fputs("planner output was rejected\n", stderr);
+        return 1;
+    }
+    CraneControl_Update();
+
+    yaw_count_before = yaw_absolute_command_count;
+    reach_count_before = reach_absolute_command_count;
+    captured_yaw_position_units = UINT32_MAX;
+    captured_reach_position_units = UINT32_MAX;
+    capture_yaw_move = 1U;
+    if (CraneControl_ReturnToInitial() != CRANE_CONTROL_OK) {
+        fputs("return request was rejected\n", stderr);
+        return 1;
+    }
+    CraneControl_GetState(&state);
+    if (state.returning_to_initial == 0U || state.axes_at_target != 0U) {
+        fputs("return request did not clear the arrival state\n", stderr);
+        return 1;
+    }
+
+    CraneControl_Update();
+    if (yaw_absolute_command_count != yaw_count_before + 1U ||
+        reach_absolute_command_count != reach_count_before + 1U ||
+        captured_yaw_command != PD42S1_COMMAND_ABSOLUTE_POSITION ||
+        captured_yaw_direction != PD42S1_DIRECTION_FORWARD ||
+        captured_yaw_position_units != 0U ||
+        captured_reach_direction != PD42S1_DIRECTION_FORWARD ||
+        captured_reach_position_units != 0U) {
+        fputs("return did not send two absolute zero targets\n", stderr);
+        return 1;
+    }
+
+    CraneControl_Update();
+    CraneControl_GetState(&state);
+    if (state.returning_to_initial != 0U || state.axes_at_target == 0U) {
+        fputs("return did not finish after both axes arrived\n", stderr);
         return 1;
     }
     return 0;
@@ -596,7 +697,7 @@ int main(void)
     if (test_planner_z_does_not_control_lift() != 0) {
         return 1;
     }
-    if (test_complete_reference_uses_full_speed_to_settle() != 0) {
+    if (test_complete_reference_does_not_restart_axes() != 0) {
         return 1;
     }
     if (test_complete_waits_for_both_axes_to_arrive() != 0) {
@@ -606,6 +707,9 @@ int main(void)
         return 1;
     }
     if (test_axis_arrival_has_a_timeout() != 0) {
+        return 1;
+    }
+    if (test_return_to_initial_uses_absolute_zero_targets() != 0) {
         return 1;
     }
     if (test_measured_transfer_yaw_fits_the_wrist() != 0) {

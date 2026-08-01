@@ -63,5 +63,11 @@ max485_status_t pd42s1_receive_response(uint8_t motor_id,
 max485_status_t pd42s1_read_arrival_flag(uint8_t motor_id,
                                         pd42s1_arrival_t *arrival,
                                         uint32_t timeout_ms);
+max485_status_t pd42s1_read_position_error(uint8_t motor_id,
+                                           int32_t *position_units,
+                                           uint32_t timeout_ms);
+max485_status_t pd42s1_read_realtime_position(uint8_t motor_id,
+                                              int32_t *position_units,
+                                              uint32_t timeout_ms);
 
 #endif

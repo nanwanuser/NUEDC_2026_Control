@@ -265,10 +265,11 @@ static uint8_t arm_mission(MissionId mission, uint32_t run_id)
     CraneControlState crane_state;
 
     /* The crane task parks the boom before it accepts references. Starting ahead
-       of that would submit a plan nothing executes, and the run would burn the
-       whole time limit before anyone noticed. */
+       of that, or while the previous run is returning, would submit a plan that
+       cannot execute. */
     CraneControl_GetState(&crane_state);
-    if (crane_state.initialized == 0U) {
+    if (crane_state.initialized == 0U ||
+        crane_state.returning_to_initial != 0U) {
         return 0U;
     }
 
@@ -450,6 +451,7 @@ void Mission_App(void *argument)
     DecisionTaskOutput decision_output;
     VisionUartOutput vision_output;
     uint32_t run_start_tick = 0U;
+    uint8_t return_commanded = 0U;
 
     (void)argument;
     Mission_GetOutput(&output);
@@ -458,7 +460,8 @@ void Mission_App(void *argument)
         const uint32_t now_tick = osKernelGetTickCount();
         MissionId requested = take_key_request();
         const uint8_t running = (output.state == MISSION_STATE_ACQUIRING) ||
-                                (output.state == MISSION_STATE_RUNNING);
+                                (output.state == MISSION_STATE_RUNNING) ||
+                                (output.state == MISSION_STATE_RETURNING);
 
         if (requested == MISSION_NONE) {
             requested = take_start_request();
@@ -482,6 +485,7 @@ void Mission_App(void *argument)
             output.decision_result = DECISION_RESULT_OK;
             output.trajectory_result = TRAJECTORY_RESULT_OK;
             output.crane_status = CRANE_CONTROL_OK;
+            return_commanded = 0U;
             run_start_tick = now_tick;
 
             RoutePlanning_Cancel();
@@ -546,7 +550,9 @@ void Mission_App(void *argument)
 
             if (decision_output.execution_state == DECISION_EXECUTION_COMPLETE) {
                 output.placed_count = decision_output.plan.move_count;
-                output.state = MISSION_STATE_COMPLETE;
+                output.state = MISSION_STATE_RETURNING;
+                return_commanded = 0U;
+                RoutePlanning_Cancel();
             } else if (decision_output.execution_state ==
                        DECISION_EXECUTION_ERROR) {
                 output.state = MISSION_STATE_FAILED;
@@ -565,10 +571,38 @@ void Mission_App(void *argument)
             }
             publish_output(&output);
 
-            if (output.state == MISSION_STATE_COMPLETE) {
+            if (output.state == MISSION_STATE_RETURNING) {
                 (void)buzzer_beep(&Mission_Buzzer, MISSION_DONE_BEEP_MS);
             } else if (output.state == MISSION_STATE_FAILED ||
                        output.state == MISSION_STATE_TIMEOUT) {
+                signal_failure();
+                signal_run_diagnosis(output.run_diagnosis);
+            }
+        } else if (output.state == MISSION_STATE_RETURNING) {
+            CraneControlState crane_state;
+
+            CraneControl_GetState(&crane_state);
+            output.crane_status = crane_state.status;
+            if (return_commanded == 0U) {
+                /* The completion tone is non-blocking. Do not move until it has
+                   actually ended, matching the required beep-then-return order. */
+                if (!buzzer_is_on(&Mission_Buzzer)) {
+                    if (CraneControl_ReturnToInitial() == CRANE_CONTROL_OK) {
+                        return_commanded = 1U;
+                    } else {
+                        output.state = MISSION_STATE_FAILED;
+                        output.run_diagnosis = MISSION_RUN_DIAG_CRANE_REFUSED;
+                    }
+                }
+            } else if (crane_state.status != CRANE_CONTROL_OK) {
+                output.state = MISSION_STATE_FAILED;
+                output.run_diagnosis = MISSION_RUN_DIAG_CRANE_REFUSED;
+            } else if (crane_state.returning_to_initial == 0U &&
+                       crane_state.axes_at_target != 0U) {
+                output.state = MISSION_STATE_COMPLETE;
+            }
+            publish_output(&output);
+            if (output.state == MISSION_STATE_FAILED) {
                 signal_failure();
                 signal_run_diagnosis(output.run_diagnosis);
             }

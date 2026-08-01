@@ -75,6 +75,7 @@ static float s_reach_datum_mm;
 static volatile uint8_t s_output_pending;
 static volatile uint8_t s_grip_command_pending;
 static volatile uint8_t s_pending_grip;
+static volatile uint8_t s_return_command_pending;
 static volatile TrajectoryPose s_last_pose;
 static uint8_t s_config_loaded;
 static float normalize_angle(float angle_deg)
@@ -653,6 +654,9 @@ static CraneControlStatus update_arrival_state(void)
     if (s_config.expect_stepper_response == 0U) {
         publish_arrival_flags(1U, 1U);
         s_axis_target_active = 0U;
+        taskENTER_CRITICAL();
+        s_state.returning_to_initial = 0U;
+        taskEXIT_CRITICAL();
         return CRANE_CONTROL_OK;
     }
 
@@ -675,11 +679,17 @@ static CraneControlStatus update_arrival_state(void)
     if (position_units_are_within_threshold(yaw_error_units) != 0U &&
         position_units_are_within_threshold(reach_error_units) != 0U) {
         s_axis_target_active = 0U;
+        taskENTER_CRITICAL();
+        s_state.returning_to_initial = 0U;
+        taskEXIT_CRITICAL();
         return CRANE_CONTROL_OK;
     }
     if ((uint32_t)(HAL_GetTick() - s_arrival_wait_start_tick) >=
         s_config.arrival_timeout_ms) {
         s_axis_target_active = 0U;
+        taskENTER_CRITICAL();
+        s_state.returning_to_initial = 0U;
+        taskEXIT_CRITICAL();
         return CRANE_CONTROL_ARRIVAL_TIMEOUT;
     }
     return CRANE_CONTROL_OK;
@@ -750,6 +760,17 @@ static uint8_t take_pending_output(RoutePlanningOutput *output)
     return pending;
 }
 
+static uint8_t take_return_command(void)
+{
+    uint8_t pending;
+
+    taskENTER_CRITICAL();
+    pending = s_return_command_pending;
+    s_return_command_pending = 0U;
+    taskEXIT_CRITICAL();
+    return pending;
+}
+
 static CraneControlStatus apply_pending_grip_command(void)
 {
     uint8_t grip_pending;
@@ -781,6 +802,65 @@ static CraneControlStatus park_lift(void)
     return CRANE_CONTROL_OK;
 }
 
+static CraneControlStatus apply_return_to_initial(void)
+{
+    CraneActuatorTarget target = s_state.target;
+    TrajectoryPose initial_pose;
+    CraneControlStatus status;
+    float yaw_revolutions;
+    float reach_revolutions;
+
+    target.boom_yaw_deg = s_config.startup_boom_yaw_deg;
+    target.radius_mm = s_config.reach_zero_radius_mm;
+    target.z_mm = s_config.max_z_mm;
+    target.lift_servo_angle_deg = lift_angle_for_z(target.z_mm);
+    target.end_yaw_servo_angle_deg = s_config.end_yaw_center_angle_deg;
+    target.grip = 0U;
+
+    /* Raise and release before either main axis moves across the work area. */
+    status = park_lift();
+    if (status == CRANE_CONTROL_OK &&
+        Servo_SetAngle(SERVO_END_YAW,
+                       target.end_yaw_servo_angle_deg) != HAL_OK) {
+        status = CRANE_CONTROL_SERVO_ERROR;
+    }
+    CraneControl_SetMagnet(0U);
+    if (status != CRANE_CONTROL_OK) {
+        publish_state(status, NULL, &target);
+        return status;
+    }
+
+    yaw_revolutions = (float)s_config.yaw_direction_sign *
+        (target.boom_yaw_deg - s_yaw_datum_deg) *
+        s_config.yaw_motor_revolutions_per_crane_revolution / 360.0f;
+    reach_revolutions = (float)s_config.reach_direction_sign *
+        (target.radius_mm - s_reach_datum_mm) /
+        s_config.reach_mm_per_motor_revolution;
+
+    publish_arrival_flags(0U, 0U);
+    status = command_axis(PD42S1_MOTOR_1_ID, s_config.yaw_speed_rpm,
+                          s_config.yaw_acceleration, yaw_revolutions,
+                          1U, &s_yaw_position);
+    if (status == CRANE_CONTROL_OK) {
+        status = command_axis(PD42S1_MOTOR_2_ID,
+                              s_config.reach_speed_rpm,
+                              s_config.reach_acceleration,
+                              reach_revolutions, 1U, &s_reach_position);
+    }
+    if (status == CRANE_CONTROL_OK) {
+        s_arrival_wait_start_tick = HAL_GetTick();
+        s_axis_target_active = 1U;
+        taskENTER_CRITICAL();
+        s_state.lift_position = CRANE_LIFT_RAISED;
+        taskEXIT_CRITICAL();
+        pose_from_axes(target.boom_yaw_deg, target.radius_mm,
+                       target.z_mm, &initial_pose);
+        publish_pose(&initial_pose);
+    }
+    publish_state(status, NULL, &target);
+    return status;
+}
+
 CraneControlStatus CraneControl_Init(const CraneControlConfig *config)
 {
     CraneControlConfig default_config;
@@ -800,6 +880,7 @@ CraneControlStatus CraneControl_Init(const CraneControlConfig *config)
     (void)memset(&s_reach_position, 0, sizeof(s_reach_position));
     s_grip_command_pending = 0U;
     s_pending_grip = 0U;
+    s_return_command_pending = 0U;
     s_output_pending = 0U;
     s_consecutive_bus_faults = 0U;
     s_axis_target_active = 0U;
@@ -1043,6 +1124,8 @@ CraneControlStatus CraneControl_Home(uint32_t push_ms)
 CraneControlStatus CraneControl_SubmitPlannerOutput(
     const RoutePlanningOutput *output)
 {
+    uint8_t returning;
+
     if (planner_output_is_valid(output) == 0U) {
         return CRANE_CONTROL_INVALID_ARGUMENT;
     }
@@ -1050,6 +1133,13 @@ CraneControlStatus CraneControl_SubmitPlannerOutput(
         return CRANE_CONTROL_NOT_INITIALIZED;
     }
     taskENTER_CRITICAL();
+    returning = s_state.returning_to_initial;
+    if (returning != 0U) {
+        taskEXIT_CRITICAL();
+        /* Consume stale planner snapshots without allowing them to replace the
+           return target. A new mission cannot start until the return finishes. */
+        return CRANE_CONTROL_OK;
+    }
     s_pending_output = *output;
     s_output_pending = 1U;
     taskEXIT_CRITICAL();
@@ -1075,7 +1165,25 @@ void CraneControl_Update(void)
     CraneControlStatus actuator_status;
     uint8_t applied_output = 0U;
 
-    if (take_pending_output(&output) != 0U) {
+    if (take_return_command() != 0U) {
+        const CraneControlStatus status = apply_return_to_initial();
+
+        applied_output = 1U;
+        if (status == CRANE_CONTROL_OK) {
+            s_consecutive_bus_faults = 0U;
+        } else if (status_is_transient(status) != 0U &&
+                   s_consecutive_bus_faults < CRANE_MAX_CONSECUTIVE_BUS_FAULTS) {
+            ++s_consecutive_bus_faults;
+            taskENTER_CRITICAL();
+            s_return_command_pending = 1U;
+            taskEXIT_CRITICAL();
+            publish_state(CRANE_CONTROL_OK, NULL, NULL);
+        } else {
+            taskENTER_CRITICAL();
+            s_state.returning_to_initial = 0U;
+            taskEXIT_CRITICAL();
+        }
+    } else if (take_pending_output(&output) != 0U) {
         const CraneControlStatus status = apply_output(&output);
 
         applied_output = 1U;
@@ -1102,6 +1210,9 @@ void CraneControl_Update(void)
             ++s_consecutive_bus_faults;
             publish_state(CRANE_CONTROL_OK, NULL, NULL);
         } else {
+            taskENTER_CRITICAL();
+            s_state.returning_to_initial = 0U;
+            taskEXIT_CRITICAL();
             publish_state(status, NULL, NULL);
         }
     }
@@ -1164,6 +1275,25 @@ CraneControlStatus CraneControl_CommandGrip(uint8_t enabled)
     taskENTER_CRITICAL();
     s_pending_grip = enabled != 0U ? 1U : 0U;
     s_grip_command_pending = 1U;
+    taskEXIT_CRITICAL();
+    return CRANE_CONTROL_OK;
+}
+
+CraneControlStatus CraneControl_ReturnToInitial(void)
+{
+    if (s_state.initialized == 0U) {
+        return CRANE_CONTROL_NOT_INITIALIZED;
+    }
+
+    taskENTER_CRITICAL();
+    s_output_pending = 0U;
+    s_grip_command_pending = 0U;
+    s_pending_grip = 0U;
+    s_return_command_pending = 1U;
+    s_state.returning_to_initial = 1U;
+    s_state.yaw_at_target = 0U;
+    s_state.reach_at_target = 0U;
+    s_state.axes_at_target = 0U;
     taskEXIT_CRITICAL();
     return CRANE_CONTROL_OK;
 }
