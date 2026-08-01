@@ -28,6 +28,12 @@ static volatile DecisionTaskRequest VisionUart_ArmedRequest;
 static volatile uint32_t VisionUart_ArmedId;
 static volatile uint8_t VisionUart_ArmPending;
 static volatile uint8_t VisionUart_AbortRequested;
+/* Kept off the 3 KB vision task stack: a complete card payload and its
+   reassembly buffer are both kilobyte-scale. */
+static VisionProtocolCardAssembler VisionUart_CardAssembler;
+static DecisionCardFrame VisionUart_CardDecoded;
+static DecisionCardFrame VisionUart_CardCandidate;
+static DecisionTaskRequest VisionUart_BaseRequest;
 
 static void publish_output(const VisionUartOutput *output)
 {
@@ -106,6 +112,12 @@ void VisionUart_Init(void)
     VisionUart_ArmedId = 0U;
     (void)memset((void *)&VisionUart_ArmedRequest, 0,
                  sizeof(VisionUart_ArmedRequest));
+    VisionProtocolCardAssembler_Init(&VisionUart_CardAssembler);
+    (void)memset(&VisionUart_CardDecoded, 0, sizeof(VisionUart_CardDecoded));
+    (void)memset(&VisionUart_CardCandidate, 0,
+                 sizeof(VisionUart_CardCandidate));
+    (void)memset(&VisionUart_BaseRequest, 0,
+                 sizeof(VisionUart_BaseRequest));
     (void)memset(&output, 0, sizeof(output));
     output.state = VISION_UART_STATE_IDLE;
     VisionUart_Output = output;
@@ -156,15 +168,16 @@ void VisionUart_App(void *argument)
     VisionProtocolStabilizer stabilizer;
     VisionProtocolPacket packet;
     VisionProtocolPacket stable_packet;
-    DecisionTaskRequest base_request;
     VisionUartOutput output;
     uint32_t last_byte_tick;
+    uint32_t card_layout_id = 0U;
+    uint16_t card_full_crc = 0U;
+    uint8_t card_stable_count = 0U;
     uint8_t submitted = 1U;
 
     (void)argument;
     VisionProtocolParser_Init(&parser);
     VisionProtocolStabilizer_Init(&stabilizer);
-    (void)memset(&base_request, 0, sizeof(base_request));
     VisionUart_GetOutput(&output);
     last_byte_tick = osKernelGetTickCount();
 
@@ -175,7 +188,7 @@ void VisionUart_App(void *argument)
            frames arriving before the start key are ignored on purpose. */
         if (VisionUart_ArmPending != 0U) {
             taskENTER_CRITICAL();
-            base_request = VisionUart_ArmedRequest;
+            VisionUart_BaseRequest = VisionUart_ArmedRequest;
             output.arm_id = VisionUart_ArmedId;
             VisionUart_ArmPending = 0U;
             VisionUart_AbortRequested = 0U;
@@ -183,6 +196,10 @@ void VisionUart_App(void *argument)
 
             VisionProtocolParser_Reset(&parser);
             VisionProtocolStabilizer_Reset(&stabilizer);
+            VisionProtocolCardAssembler_Reset(&VisionUart_CardAssembler);
+            card_layout_id = 0U;
+            card_full_crc = 0U;
+            card_stable_count = 0U;
             output.stable_count = 0U;
             submitted = 0U;
             last_byte_tick = osKernelGetTickCount();
@@ -221,6 +238,8 @@ void VisionUart_App(void *argument)
             taskEXIT_CRITICAL();
             VisionProtocolParser_Reset(&parser);
             VisionProtocolStabilizer_Reset(&stabilizer);
+            VisionProtocolCardAssembler_Reset(&VisionUart_CardAssembler);
+            card_stable_count = 0U;
             output.stable_count = 0U;
             ++output.invalid_frame_count;
             output.dropped_byte_count = VisionUart_DroppedBytes;
@@ -241,24 +260,23 @@ void VisionUart_App(void *argument)
 
             last_byte_tick = osKernelGetTickCount();
             result = VisionProtocolParser_PushByte(&parser, byte, &packet);
-            if (result == VISION_PROTOCOL_RESULT_FRAME) {
+            if (result == VISION_PROTOCOL_RESULT_FRAME &&
+                VisionUart_BaseRequest.strategy ==
+                    DECISION_STRATEGY_GEOMETRIC) {
                 ++output.valid_frame_count;
                 output.last_seq = packet.seq;
                 if (VisionProtocolStabilizer_Add(&stabilizer,
                                                  &packet,
                                                  &stable_packet) != 0U) {
-                    DecisionTaskRequest request;
-
                     output.stable_count = stabilizer.stable_count;
                     output.state = VISION_UART_STATE_STABLE;
                     publish_output(&output);
 
-                    request = base_request;
-                    request.vision = stable_packet.frame;
+                    VisionUart_BaseRequest.vision = stable_packet.frame;
                     /* Close the receive window before handing the stable data
                        over. Any later bytes are ignored until the next arm. */
                     close_receive();
-                    if (DecisionTask_Submit(&request) != 0U) {
+                    if (DecisionTask_Submit(&VisionUart_BaseRequest) != 0U) {
                         output.state = VISION_UART_STATE_SUBMITTED;
                     } else {
                         output.state = VISION_UART_STATE_ERROR;
@@ -268,11 +286,59 @@ void VisionUart_App(void *argument)
                     output.stable_count = stabilizer.stable_count;
                 }
                 publish_output(&output);
+            } else if (result == VISION_PROTOCOL_RESULT_CARD_CHUNK &&
+                       VisionUart_BaseRequest.strategy ==
+                           DECISION_STRATEGY_CARD_PATTERN) {
+                ++output.valid_frame_count;
+                output.last_seq = packet.seq;
+                if (VisionProtocolCardAssembler_Add(
+                        &VisionUart_CardAssembler,
+                        &packet.card_chunk,
+                        &VisionUart_CardDecoded) != 0U) {
+                    if (card_layout_id == VisionUart_CardDecoded.layout_id &&
+                        card_full_crc == packet.card_chunk.full_crc) {
+                        if (card_stable_count < UINT8_MAX) {
+                            ++card_stable_count;
+                        }
+                    } else {
+                        VisionUart_CardCandidate = VisionUart_CardDecoded;
+                        card_layout_id = VisionUart_CardDecoded.layout_id;
+                        card_full_crc = packet.card_chunk.full_crc;
+                        card_stable_count = 1U;
+                    }
+                    output.stable_count = card_stable_count;
+                    if (card_stable_count >=
+                        VISION_PROTOCOL_STABLE_FRAME_COUNT) {
+                        output.state = VISION_UART_STATE_STABLE;
+                        publish_output(&output);
+                        VisionUart_BaseRequest.card =
+                            VisionUart_CardCandidate;
+                        VisionUart_BaseRequest.vision =
+                            VisionUart_CardCandidate.vision;
+                        close_receive();
+                        if (DecisionTask_Submit(&VisionUart_BaseRequest) != 0U) {
+                            output.state = VISION_UART_STATE_SUBMITTED;
+                        } else {
+                            output.state = VISION_UART_STATE_ERROR;
+                        }
+                        submitted = 1U;
+                    }
+                    publish_output(&output);
+                }
             } else if (result != VISION_PROTOCOL_RESULT_NONE) {
-                VisionProtocolStabilizer_Reset(&stabilizer);
-                output.stable_count = 0U;
-                ++output.invalid_frame_count;
-                publish_output(&output);
+                /* The camera may interleave geometric and card results. A
+                   well-formed frame for the other strategy is ignored rather
+                   than counted as a link error. */
+                if (result != VISION_PROTOCOL_RESULT_FRAME &&
+                    result != VISION_PROTOCOL_RESULT_CARD_CHUNK) {
+                    VisionProtocolStabilizer_Reset(&stabilizer);
+                    VisionProtocolCardAssembler_Reset(
+                        &VisionUart_CardAssembler);
+                    card_stable_count = 0U;
+                    output.stable_count = 0U;
+                    ++output.invalid_frame_count;
+                    publish_output(&output);
+                }
             }
         }
 

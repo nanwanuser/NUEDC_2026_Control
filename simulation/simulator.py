@@ -22,7 +22,13 @@ from simulation.bindings import (
     TrajectorySegment,
     load_library,
 )
-from simulation.scenarios import Scenario, solve_scenario, transform_polygon
+from simulation.scenarios import (
+    CardValidation,
+    Scenario,
+    solve_scenario,
+    transform_polygon,
+    validate_card_solution,
+)
 
 
 @dataclass(frozen=True)
@@ -64,6 +70,7 @@ class SimulationResult:
     moves: tuple[MoveExecution, ...]
     initial_polygons: dict[int, np.ndarray]
     final_polygons: dict[int, np.ndarray]
+    card_validation: CardValidation | None
 
 
 def pose_array(pose: TrajectoryPose) -> np.ndarray:
@@ -239,6 +246,11 @@ def run_simulation(
 
     library = load_library()
     decision_plan = solve_scenario(scenario)
+    card_validation = (
+        validate_card_solution(scenario, decision_plan)
+        if scenario.card_frame is not None
+        else None
+    )
     initial_polygons = _initial_polygons(scenario)
     pieces_by_id = {
         int(scenario.frame.pieces[index].id): scenario.frame.pieces[index]
@@ -376,4 +388,5 @@ def run_simulation(
         moves=tuple(moves),
         initial_polygons=initial_polygons,
         final_polygons=final_polygons,
+        card_validation=card_validation,
     )

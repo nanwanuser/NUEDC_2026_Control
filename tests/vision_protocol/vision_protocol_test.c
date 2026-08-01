@@ -28,6 +28,12 @@ static void write_u16(uint8_t *data, uint16_t value)
     data[1] = (uint8_t)(value >> 8U);
 }
 
+static void write_u32(uint8_t *data, uint32_t value)
+{
+    write_u16(data, (uint16_t)value);
+    write_u16(&data[2], (uint16_t)(value >> 16U));
+}
+
 static size_t encode_frame(uint16_t seq,
                            uint8_t reserved,
                            const RawPiece *pieces,
@@ -98,6 +104,100 @@ static VisionProtocolResult feed(VisionProtocolParser *parser,
         }
     }
     return result;
+}
+
+static size_t build_card_blob(uint8_t *blob)
+{
+    uint16_t position = 0U;
+
+    blob[position++] = VISION_PROTOCOL_CARD_FORMAT_VERSION;
+    blob[position++] = 1U;
+    write_u16(&blob[position], 77U);
+    position += 2U;
+
+    blob[position++] = 7U;
+    blob[position++] = 3U;
+    write_u16(&blob[position], 100U);
+    position += 2U;
+    write_u16(&blob[position], 200U);
+    position += 2U;
+    write_u16(&blob[position], 0U);
+    position += 2U;
+    write_u16(&blob[position], 0U);
+    position += 2U;
+    write_u16(&blob[position], 200U);
+    position += 2U;
+    write_u16(&blob[position], 0U);
+    position += 2U;
+    write_u16(&blob[position], 0U);
+    position += 2U;
+    write_u16(&blob[position], 200U);
+    position += 2U;
+
+    blob[position++] = 2U;
+    blob[position++] = 0U;
+    blob[position++] = 51U;
+    blob[position++] = DECISION_CARD_COLOR_RED;
+    blob[position++] = 15U;
+    blob[position++] = 8U;
+    blob[position++] = 230U;
+    blob[position++] = 1U;
+    blob[position++] = 204U;
+    blob[position++] = DECISION_CARD_COLOR_BLACK;
+    blob[position++] = (uint8_t)-20;
+    blob[position++] = 12U;
+    blob[position++] = 240U;
+
+    blob[position++] = 1U;
+    write_u16(&blob[position], 120U);
+    position += 2U;
+    write_u16(&blob[position], 130U);
+    position += 2U;
+    write_u16(&blob[position], 45U);
+    position += 2U;
+    blob[position++] = DECISION_CARD_COLOR_RED;
+    blob[position++] = DECISION_CARD_PRIMITIVE_DOT;
+    blob[position++] = 5U;
+    blob[position++] = 220U;
+    return position;
+}
+
+static size_t encode_card_chunk(uint16_t seq,
+                                uint32_t layout_id,
+                                uint16_t total_length,
+                                uint16_t offset,
+                                uint16_t full_crc,
+                                const uint8_t *chunk,
+                                uint8_t chunk_length,
+                                uint8_t *buffer)
+{
+    uint16_t payload_length = (uint16_t)(11U + chunk_length);
+    uint16_t position = 8U;
+    uint16_t frame_crc;
+
+    buffer[0] = VISION_PROTOCOL_HEADER_FIRST;
+    buffer[1] = VISION_PROTOCOL_HEADER_SECOND;
+    buffer[2] = VISION_PROTOCOL_VERSION;
+    buffer[3] = VISION_PROTOCOL_TYPE_CARD_CHUNK;
+    write_u16(&buffer[4], seq);
+    write_u16(&buffer[6], payload_length);
+    write_u32(&buffer[position], layout_id);
+    position += 4U;
+    write_u16(&buffer[position], total_length);
+    position += 2U;
+    write_u16(&buffer[position], offset);
+    position += 2U;
+    write_u16(&buffer[position], full_crc);
+    position += 2U;
+    buffer[position++] = chunk_length;
+    (void)memcpy(&buffer[position], chunk, chunk_length);
+    position = (uint16_t)(position + chunk_length);
+    frame_crc = VisionProtocol_Crc16(&buffer[2], 6U + payload_length);
+    write_u16(&buffer[position], frame_crc);
+    position += 2U;
+    buffer[position++] = VISION_PROTOCOL_END_FIRST;
+    buffer[position++] = VISION_PROTOCOL_END_SECOND;
+    return position;
 }
 
 static int test_decode_four_pieces(void)
@@ -181,11 +281,99 @@ static int test_three_stable_frames(void)
     return 0;
 }
 
+static int test_card_chunks_reassemble_out_of_order(void)
+{
+    uint8_t blob[VISION_PROTOCOL_CARD_MAX_SERIALIZED_LENGTH];
+    uint8_t frame[VISION_PROTOCOL_MAX_FRAME_LENGTH];
+    size_t blob_length = build_card_blob(blob);
+    uint16_t full_crc = VisionProtocol_Crc16(blob, blob_length);
+    uint16_t split = (uint16_t)(blob_length / 2U);
+    VisionProtocolParser parser;
+    VisionProtocolCardAssembler assembler;
+    VisionProtocolPacket packet;
+    DecisionCardFrame card;
+    size_t frame_length;
+
+    VisionProtocolParser_Init(&parser);
+    VisionProtocolCardAssembler_Init(&assembler);
+
+    frame_length = encode_card_chunk(
+        10U, 0x12345678U, (uint16_t)blob_length, split, full_crc,
+        &blob[split], (uint8_t)(blob_length - split), frame);
+    ASSERT_TRUE(feed(&parser, frame, frame_length, &packet) ==
+                VISION_PROTOCOL_RESULT_CARD_CHUNK);
+    ASSERT_TRUE(packet.type == VISION_PROTOCOL_TYPE_CARD_CHUNK);
+    ASSERT_TRUE(VisionProtocolCardAssembler_Add(
+                    &assembler, &packet.card_chunk, &card) == 0U);
+
+    frame_length = encode_card_chunk(
+        11U, 0x12345678U, (uint16_t)blob_length, 0U, full_crc,
+        blob, (uint8_t)split, frame);
+    ASSERT_TRUE(feed(&parser, frame, frame_length, &packet) ==
+                VISION_PROTOCOL_RESULT_CARD_CHUNK);
+    ASSERT_TRUE(VisionProtocolCardAssembler_Add(
+                    &assembler, &packet.card_chunk, &card) != 0U);
+    ASSERT_TRUE(card.layout_id == 0x12345678U);
+    ASSERT_TRUE(card.piece_count == 1U);
+    ASSERT_TRUE(card.vision.seq == 77U);
+    ASSERT_TRUE(card.pieces[0].edge_event_count == 2U);
+    ASSERT_TRUE(card.pieces[0].edge_events[1].color ==
+                DECISION_CARD_COLOR_BLACK);
+    ASSERT_TRUE(card.pieces[0].primitive_count == 1U);
+    ASSERT_TRUE(fabsf(card.pieces[0].primitives[0].center.x_mm - 12.0f) <
+                0.001f);
+    return 0;
+}
+
+static int test_card_aggregate_crc_failure_resets_assembler(void)
+{
+    uint8_t blob[VISION_PROTOCOL_CARD_MAX_SERIALIZED_LENGTH];
+    uint8_t frame[VISION_PROTOCOL_MAX_FRAME_LENGTH];
+    size_t blob_length = build_card_blob(blob);
+    uint16_t full_crc = VisionProtocol_Crc16(blob, blob_length);
+    uint16_t split = (uint16_t)(blob_length / 2U);
+    VisionProtocolParser parser;
+    VisionProtocolCardAssembler assembler;
+    VisionProtocolPacket packet;
+    DecisionCardFrame card;
+    size_t frame_length;
+    uint8_t cycle;
+
+    VisionProtocolParser_Init(&parser);
+    VisionProtocolCardAssembler_Init(&assembler);
+    for (cycle = 0U; cycle < 2U; ++cycle) {
+        uint16_t advertised_crc = cycle == 0U
+            ? (uint16_t)(full_crc ^ 1U)
+            : full_crc;
+
+        frame_length = encode_card_chunk(
+            20U, 0x87654321U, (uint16_t)blob_length, 0U, advertised_crc,
+            blob, (uint8_t)split, frame);
+        ASSERT_TRUE(feed(&parser, frame, frame_length, &packet) ==
+                    VISION_PROTOCOL_RESULT_CARD_CHUNK);
+        ASSERT_TRUE(VisionProtocolCardAssembler_Add(
+                        &assembler, &packet.card_chunk, &card) == 0U);
+
+        frame_length = encode_card_chunk(
+            21U, 0x87654321U, (uint16_t)blob_length, split, advertised_crc,
+            &blob[split], (uint8_t)(blob_length - split), frame);
+        ASSERT_TRUE(feed(&parser, frame, frame_length, &packet) ==
+                    VISION_PROTOCOL_RESULT_CARD_CHUNK);
+        ASSERT_TRUE(VisionProtocolCardAssembler_Add(
+                        &assembler, &packet.card_chunk, &card) ==
+                    (uint8_t)(cycle == 1U));
+    }
+    ASSERT_TRUE(card.layout_id == 0x87654321U);
+    return 0;
+}
+
 int main(void)
 {
     if (test_decode_four_pieces() != 0) return 1;
     if (test_crc_and_end_rejected() != 0) return 1;
     if (test_three_stable_frames() != 0) return 1;
+    if (test_card_chunks_reassemble_out_of_order() != 0) return 1;
+    if (test_card_aggregate_crc_failure_resets_assembler() != 0) return 1;
     puts("vision protocol tests passed");
     return 0;
 }

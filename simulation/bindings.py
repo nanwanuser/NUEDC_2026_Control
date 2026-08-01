@@ -9,12 +9,22 @@ from simulation.build_native import build_library
 
 DECISION_MAX_PIECES = 4
 DECISION_MAX_VERTICES = 5
+DECISION_CARD_MAX_EDGE_EVENTS_PER_PIECE = 24
+DECISION_CARD_MAX_PRIMITIVES_PER_PIECE = 16
 TRAJECTORY_AXIS_COUNT = 4
 TRAJECTORY_COEFFICIENT_COUNT = 6
 TRAJECTORY_MAX_WAYPOINTS = 6
 TRAJECTORY_MAX_SEGMENTS = TRAJECTORY_MAX_WAYPOINTS - 1
 
 DECISION_RESULT_OK = 0
+DECISION_RESULT_INVALID_FRAME = 2
+
+DECISION_CARD_COLOR_RED = 1
+DECISION_CARD_COLOR_BLACK = 2
+DECISION_CARD_PRIMITIVE_UNKNOWN = 0
+DECISION_CARD_PRIMITIVE_DOT = 1
+DECISION_CARD_PRIMITIVE_LINE = 2
+DECISION_CARD_PRIMITIVE_GLYPH = 3
 
 TRAJECTORY_PHASE_APPROACH = 0
 TRAJECTORY_PHASE_TRANSFER = 1
@@ -110,6 +120,53 @@ class DecisionVisionFrame(ctypes.Structure):
     ]
 
 
+class DecisionCardEdgeEvent(ctypes.Structure):
+    _fields_ = [
+        ("edge_index", ctypes.c_uint8),
+        ("position_q8", ctypes.c_uint8),
+        ("color", ctypes.c_uint8),
+        ("tangent_deg", ctypes.c_int8),
+        ("width_q4_mm", ctypes.c_uint8),
+        ("confidence", ctypes.c_uint8),
+    ]
+
+
+class DecisionCardPrimitive(ctypes.Structure):
+    _fields_ = [
+        ("center", DecisionPoint),
+        ("area_mm2", ctypes.c_float),
+        ("color", ctypes.c_uint8),
+        ("kind", ctypes.c_uint8),
+        ("angle_deg", ctypes.c_int8),
+        ("confidence", ctypes.c_uint8),
+    ]
+
+
+class DecisionCardPieceFeatures(ctypes.Structure):
+    _fields_ = [
+        ("piece_id", ctypes.c_uint8),
+        ("edge_event_count", ctypes.c_uint8),
+        (
+            "edge_events",
+            DecisionCardEdgeEvent * DECISION_CARD_MAX_EDGE_EVENTS_PER_PIECE,
+        ),
+        ("primitive_count", ctypes.c_uint8),
+        (
+            "primitives",
+            DecisionCardPrimitive * DECISION_CARD_MAX_PRIMITIVES_PER_PIECE,
+        ),
+    ]
+
+
+class DecisionCardFrame(ctypes.Structure):
+    _fields_ = [
+        ("layout_id", ctypes.c_uint32),
+        ("vision", DecisionVisionFrame),
+        ("piece_count", ctypes.c_uint8),
+        ("pieces", DecisionCardPieceFeatures * DECISION_MAX_PIECES),
+    ]
+
+
 class DecisionConfig(ctypes.Structure):
     _fields_ = [
         ("target_center", DecisionPoint),
@@ -146,6 +203,7 @@ class DecisionMove(ctypes.Structure):
 class DecisionPlan(ctypes.Structure):
     _fields_ = [
         ("seq", ctypes.c_uint32),
+        ("search_nodes", ctypes.c_uint32),
         ("move_count", ctypes.c_uint8),
         ("moves", DecisionMove * DECISION_MAX_PIECES),
     ]
@@ -163,6 +221,12 @@ def _configure_library(library: ctypes.CDLL) -> None:
         ctypes.POINTER(DecisionPlan),
     ]
     library.Decision_Solve.restype = ctypes.c_int
+    library.Decision_SolveCard.argtypes = [
+        ctypes.POINTER(DecisionCardFrame),
+        ctypes.POINTER(DecisionConfig),
+        ctypes.POINTER(DecisionPlan),
+    ]
+    library.Decision_SolveCard.restype = ctypes.c_int
     library.Decision_BuildTrajectoryRequest.argtypes = [
         ctypes.POINTER(DecisionMove),
         ctypes.POINTER(TrajectoryPose),
@@ -195,6 +259,73 @@ def _configure_library(library: ctypes.CDLL) -> None:
     ]
     library.Trajectory_GetDuration.restype = ctypes.c_float
 
+    for export_name in (
+        "Simulation_SizeOfDecisionPoint",
+        "Simulation_SizeOfDecisionMove",
+        "Simulation_SizeOfDecisionPlan",
+        "Simulation_SizeOfDecisionCardEdgeEvent",
+        "Simulation_SizeOfDecisionCardPrimitive",
+        "Simulation_SizeOfDecisionCardPieceFeatures",
+        "Simulation_SizeOfDecisionCardFrame",
+        "Simulation_SizeOfTrajectoryPose",
+        "Simulation_SizeOfTrajectoryPlan",
+        "Simulation_OffsetOfDecisionPlanMoves",
+        "Simulation_OffsetOfDecisionPlanSearchNodes",
+    ):
+        getattr(library, export_name).restype = ctypes.c_uint32
+    library.Simulation_DecisionAssemblyClearanceMm.restype = ctypes.c_float
+
+
+def assert_native_layout(library: ctypes.CDLL) -> None:
+    """Fail before simulation if ctypes no longer matches the firmware ABI."""
+
+    sizes = (
+        (DecisionPoint, library.Simulation_SizeOfDecisionPoint()),
+        (DecisionMove, library.Simulation_SizeOfDecisionMove()),
+        (DecisionPlan, library.Simulation_SizeOfDecisionPlan()),
+        (
+            DecisionCardEdgeEvent,
+            library.Simulation_SizeOfDecisionCardEdgeEvent(),
+        ),
+        (
+            DecisionCardPrimitive,
+            library.Simulation_SizeOfDecisionCardPrimitive(),
+        ),
+        (
+            DecisionCardPieceFeatures,
+            library.Simulation_SizeOfDecisionCardPieceFeatures(),
+        ),
+        (DecisionCardFrame, library.Simulation_SizeOfDecisionCardFrame()),
+        (TrajectoryPose, library.Simulation_SizeOfTrajectoryPose()),
+        (TrajectoryPlan, library.Simulation_SizeOfTrajectoryPlan()),
+    )
+    for structure, native_size in sizes:
+        python_size = ctypes.sizeof(structure)
+        if python_size != native_size:
+            raise RuntimeError(
+                f"ABI mismatch for {structure.__name__}: "
+                f"ctypes={python_size}, native={native_size}"
+            )
+
+    offsets = (
+        (
+            "DecisionPlan.search_nodes",
+            DecisionPlan.search_nodes.offset,
+            library.Simulation_OffsetOfDecisionPlanSearchNodes(),
+        ),
+        (
+            "DecisionPlan.moves",
+            DecisionPlan.moves.offset,
+            library.Simulation_OffsetOfDecisionPlanMoves(),
+        ),
+    )
+    for name, python_offset, native_offset in offsets:
+        if python_offset != native_offset:
+            raise RuntimeError(
+                f"ABI offset mismatch for {name}: "
+                f"ctypes={python_offset}, native={native_offset}"
+            )
+
 
 def load_library(force_rebuild: bool = False) -> ctypes.CDLL:
     """Build, load, and configure the native algorithm library."""
@@ -206,4 +337,5 @@ def load_library(force_rebuild: bool = False) -> ctypes.CDLL:
     path = build_library(force=force_rebuild)
     _library = ctypes.CDLL(str(path))
     _configure_library(_library)
+    assert_native_layout(_library)
     return _library

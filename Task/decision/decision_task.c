@@ -86,6 +86,7 @@ void DecisionTask_GetDefaultRequest(DecisionTaskRequest *request)
     }
 
     (void)memset(request, 0, sizeof(*request));
+    request->strategy = DECISION_STRATEGY_GEOMETRIC;
     Decision_GetDefaultConfig(&request->config);
     request->execution.current_pose.x_mm = 0.0f;
     request->execution.current_pose.y_mm = 0.0f;
@@ -152,9 +153,11 @@ void Decision_App(void *argument)
             copy_request(&request);
             RoutePlanning_Cancel();
             (void)memset(&output, 0, sizeof(output));
-            output.result = Decision_Solve(&request.vision,
-                                           &request.config,
-                                           &output.plan);
+            output.result = Decision_SolveStrategy(request.strategy,
+                                                   &request.vision,
+                                                   &request.card,
+                                                   &request.config,
+                                                   &output.plan);
             output.trajectory_result = TRAJECTORY_RESULT_INVALID_ARGUMENT;
 
             if (output.result == DECISION_RESULT_OK &&

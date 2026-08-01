@@ -35,7 +35,9 @@ typedef enum {
 } DecisionExecutionState;
 
 typedef struct {
+    DecisionStrategy strategy;
     DecisionVisionFrame vision;
+    DecisionCardFrame card;
     DecisionConfig config;
     DecisionExecutionConfig execution;
 } DecisionTaskRequest;

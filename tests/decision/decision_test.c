@@ -549,6 +549,183 @@ static void test_place_centers_include_safety_clearance(void)
     }
 }
 
+static void add_card_edge_event(DecisionCardPieceFeatures *features,
+                                uint8_t edge_index,
+                                uint8_t position_q8,
+                                DecisionCardColor color)
+{
+    DecisionCardEdgeEvent *event =
+        &features->edge_events[features->edge_event_count++];
+
+    (void)memset(event, 0, sizeof(*event));
+    event->edge_index = edge_index;
+    event->position_q8 = position_q8;
+    event->color = color;
+    event->width_q4_mm = 8U;
+    event->confidence = 255U;
+}
+
+static const DecisionMove *find_move(const DecisionPlan *plan,
+                                     uint8_t piece_id)
+{
+    uint8_t index;
+
+    for (index = 0U; index < plan->move_count; ++index) {
+        if (plan->moves[index].piece_id == piece_id) {
+            return &plan->moves[index];
+        }
+    }
+    return NULL;
+}
+
+static float place_distance(const DecisionPlan *plan,
+                            uint8_t left_id,
+                            uint8_t right_id)
+{
+    const DecisionMove *left = find_move(plan, left_id);
+    const DecisionMove *right = find_move(plan, right_id);
+    float dx;
+    float dy;
+
+    if (left == NULL || right == NULL) {
+        return 0.0f;
+    }
+    dx = left->place.x_mm - right->place.x_mm;
+    dy = left->place.y_mm - right->place.y_mm;
+    return sqrtf(dx * dx + dy * dy);
+}
+
+static void reverse_card_piece_input(DecisionPiece *piece,
+                                     DecisionCardPieceFeatures *features)
+{
+    uint8_t left = 0U;
+    uint8_t right = (uint8_t)(piece->vertex_count - 1U);
+    uint8_t event_index;
+
+    while (left < right) {
+        DecisionPoint temporary = piece->vertices[left];
+        piece->vertices[left] = piece->vertices[right];
+        piece->vertices[right] = temporary;
+        ++left;
+        --right;
+    }
+    for (event_index = 0U; event_index < features->edge_event_count;
+         ++event_index) {
+        DecisionCardEdgeEvent *event = &features->edge_events[event_index];
+        event->edge_index = (uint8_t)(
+            (2U * piece->vertex_count - 2U - event->edge_index) %
+            piece->vertex_count);
+        event->position_q8 = (uint8_t)(255U - event->position_q8);
+    }
+}
+
+/* Four equal rectangles have many geometry-perfect arrangements. These cut
+   events describe the four real seams, so the opposite pieces (1,3) and (2,4)
+   must remain diagonally separated in the selected card layout. */
+static void test_card_features_break_geometric_ties(void)
+{
+    DecisionCardFrame card;
+    DecisionConfig config;
+    DecisionPlan plan;
+    DecisionResult result;
+    float diagonal_13;
+    float diagonal_24;
+    uint8_t piece_index;
+
+    (void)memset(&card, 0, sizeof(card));
+    build_frame(&card.vision, 0.0f);
+    card.layout_id = 0x12345678U;
+    card.piece_count = card.vision.piece_count;
+    card.pieces[0].piece_id = 1U;
+    card.pieces[1].piece_id = 2U;
+    card.pieces[2].piece_id = 3U;
+    card.pieces[3].piece_id = 4U;
+
+    add_card_edge_event(&card.pieces[0], 1U, 51U, DECISION_CARD_COLOR_RED);
+    add_card_edge_event(&card.pieces[1], 3U, 204U, DECISION_CARD_COLOR_RED);
+    add_card_edge_event(&card.pieces[0], 2U, 89U, DECISION_CARD_COLOR_BLACK);
+    add_card_edge_event(&card.pieces[3], 0U, 166U, DECISION_CARD_COLOR_BLACK);
+    add_card_edge_event(&card.pieces[1], 2U, 115U, DECISION_CARD_COLOR_RED);
+    add_card_edge_event(&card.pieces[2], 0U, 140U, DECISION_CARD_COLOR_RED);
+    add_card_edge_event(&card.pieces[3], 1U, 153U, DECISION_CARD_COLOR_BLACK);
+    add_card_edge_event(&card.pieces[2], 3U, 102U, DECISION_CARD_COLOR_BLACK);
+
+    Decision_GetDefaultConfig(&config);
+    result = Decision_SolveCard(&card, &config, &plan);
+    check(result == DECISION_RESULT_OK,
+          "card tie-break: expected a card solution");
+    if (result != DECISION_RESULT_OK) {
+        return;
+    }
+    {
+        char message[96];
+        (void)snprintf(message, sizeof(message),
+                       "card tie-break visited %lu search nodes",
+                       (unsigned long)plan.search_nodes);
+        check(plan.search_nodes < 100U, message);
+    }
+
+    diagonal_13 = place_distance(&plan, 1U, 3U);
+    diagonal_24 = place_distance(&plan, 2U, 4U);
+    check(diagonal_13 > place_distance(&plan, 1U, 2U) + 5.0f &&
+              diagonal_13 > place_distance(&plan, 1U, 4U) + 5.0f,
+          "card tie-break: pieces 1 and 3 were not diagonal");
+    check(diagonal_24 > place_distance(&plan, 2U, 1U) + 5.0f &&
+              diagonal_24 > place_distance(&plan, 2U, 3U) + 5.0f,
+          "card tie-break: pieces 2 and 4 were not diagonal");
+
+    for (piece_index = 0U; piece_index < card.piece_count; ++piece_index) {
+        reverse_card_piece_input(&card.vision.pieces[piece_index],
+                                 &card.pieces[piece_index]);
+    }
+    result = Decision_SolveCard(&card, &config, &plan);
+    check(result == DECISION_RESULT_OK,
+          "card tie-break: reversed vertex traversal did not solve");
+    if (result == DECISION_RESULT_OK) {
+        check(place_distance(&plan, 1U, 3U) >
+                  place_distance(&plan, 1U, 2U) + 5.0f,
+              "card tie-break: reversed traversal changed the layout");
+    }
+}
+
+static void test_card_without_pattern_is_ambiguous(void)
+{
+    DecisionCardFrame card;
+    DecisionConfig config;
+    DecisionPlan plan;
+
+    (void)memset(&card, 0, sizeof(card));
+    build_frame(&card.vision, 0.0f);
+    card.piece_count = card.vision.piece_count;
+    card.pieces[0].piece_id = 1U;
+    card.pieces[1].piece_id = 2U;
+    card.pieces[2].piece_id = 3U;
+    card.pieces[3].piece_id = 4U;
+    Decision_GetDefaultConfig(&config);
+
+    check(Decision_SolveCard(&card, &config, &plan) ==
+              DECISION_RESULT_CARD_AMBIGUOUS,
+          "card strategy accepted a layout without pattern evidence");
+}
+
+static void test_strategy_dispatch_requires_card_data(void)
+{
+    DecisionVisionFrame vision;
+    DecisionConfig config;
+    DecisionPlan plan;
+
+    build_frame(&vision, 0.0f);
+    Decision_GetDefaultConfig(&config);
+    check(Decision_SolveStrategy(DECISION_STRATEGY_GEOMETRIC,
+                                 &vision, NULL, &config, &plan) ==
+              DECISION_RESULT_OK,
+          "geometric strategy unexpectedly required card data");
+    check(Decision_SolveStrategy(DECISION_STRATEGY_CARD_PATTERN,
+                                 &vision, NULL, &config, &plan) ==
+              DECISION_RESULT_INVALID_ARGUMENT,
+          "card strategy accepted a request without card data");
+}
+
 int main(void)
 {
     test_exact_pieces();
@@ -563,6 +740,9 @@ int main(void)
     test_trajectory_stops_above_pick_and_place();
     test_pick_uses_vision_center();
     test_place_centers_include_safety_clearance();
+    test_card_features_break_geometric_ties();
+    test_card_without_pattern_is_ambiguous();
+    test_strategy_dispatch_requires_card_data();
 
     if (failures != 0) {
         printf("%d decision test(s) failed\n", failures);

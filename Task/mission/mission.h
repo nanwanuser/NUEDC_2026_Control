@@ -19,8 +19,7 @@ typedef enum {
        edge-matching solve, so they share one mission. */
     MISSION_GEOMETRIC,
     /* key2: requirement 2(2), the same geometry plus matching playing-card
-       patterns across adjacent pieces. The pattern term is not implemented
-       yet, so this currently behaves like MISSION_GEOMETRIC. */
+       patterns across adjacent pieces. */
     MISSION_CARD_PATTERN
 } MissionId;
 

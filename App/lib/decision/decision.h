@@ -12,6 +12,8 @@ extern "C" {
 /* Both from the task: at most four pieces, at most five edges each. */
 #define DECISION_MAX_PIECES       4U
 #define DECISION_MAX_VERTICES     5U
+#define DECISION_CARD_MAX_EDGE_EVENTS_PER_PIECE 24U
+#define DECISION_CARD_MAX_PRIMITIVES_PER_PIECE  16U
 /* Node ceiling for the layout search. A set of four pieces that really tiles is
    answered in a few hundred to a few tens of thousands of nodes, because the
    search stops at the first layout the task cannot distinguish from perfect; the
@@ -121,6 +123,57 @@ typedef struct {
     DecisionPiece pieces[DECISION_MAX_PIECES];
 } DecisionVisionFrame;
 
+typedef enum {
+    DECISION_CARD_COLOR_RED = 1,
+    DECISION_CARD_COLOR_BLACK = 2
+} DecisionCardColor;
+
+typedef enum {
+    DECISION_CARD_PRIMITIVE_UNKNOWN = 0,
+    DECISION_CARD_PRIMITIVE_DOT,
+    DECISION_CARD_PRIMITIVE_LINE,
+    DECISION_CARD_PRIMITIVE_GLYPH
+} DecisionCardPrimitiveKind;
+
+/* A red or black stroke observed on a line just inside one polygon edge. */
+typedef struct {
+    uint8_t edge_index;
+    uint8_t position_q8;
+    uint8_t color;
+    int8_t tangent_deg;
+    /* Stroke width in quarter-millimetres. */
+    uint8_t width_q4_mm;
+    uint8_t confidence;
+} DecisionCardEdgeEvent;
+
+/* A sparse interior pattern component in the same A4 coordinate frame as the
+   measured polygon. It is transformed together with its owning piece. */
+typedef struct {
+    DecisionPoint center;
+    float area_mm2;
+    uint8_t color;
+    uint8_t kind;
+    int8_t angle_deg;
+    uint8_t confidence;
+} DecisionCardPrimitive;
+
+typedef struct {
+    uint8_t piece_id;
+    uint8_t edge_event_count;
+    DecisionCardEdgeEvent
+        edge_events[DECISION_CARD_MAX_EDGE_EVENTS_PER_PIECE];
+    uint8_t primitive_count;
+    DecisionCardPrimitive
+        primitives[DECISION_CARD_MAX_PRIMITIVES_PER_PIECE];
+} DecisionCardPieceFeatures;
+
+typedef struct {
+    uint32_t layout_id;
+    DecisionVisionFrame vision;
+    uint8_t piece_count;
+    DecisionCardPieceFeatures pieces[DECISION_MAX_PIECES];
+} DecisionCardFrame;
+
 typedef struct {
     DecisionPoint target_center;
     /* X of the line splitting the sheet into the pick half (x below it) and the
@@ -154,9 +207,15 @@ typedef struct {
 
 typedef struct {
     uint32_t seq;
+    uint32_t search_nodes;
     uint8_t move_count;
     DecisionMove moves[DECISION_MAX_PIECES];
 } DecisionPlan;
+
+typedef enum {
+    DECISION_STRATEGY_GEOMETRIC = 0,
+    DECISION_STRATEGY_CARD_PATTERN
+} DecisionStrategy;
 
 typedef enum {
     DECISION_RESULT_OK = 0,
@@ -168,7 +227,10 @@ typedef enum {
     /* A piece was measured outside the pick half, so either the pieces were laid
        out in the wrong half of the sheet or the camera is not on the frame this
        code expects. Both need a human, which is why it is not worked around. */
-    DECISION_RESULT_WRONG_HALF
+    DECISION_RESULT_WRONG_HALF,
+    /* Geometry produced one or more rectangles, but no card feature provided
+       evidence that distinguishes their relative pattern arrangement. */
+    DECISION_RESULT_CARD_AMBIGUOUS
 } DecisionResult;
 
 void Decision_GetDefaultConfig(DecisionConfig *config);
@@ -182,6 +244,19 @@ DecisionResult Decision_Solve(const DecisionVisionFrame *frame,
 DecisionResult Decision_SolveGeneral(const DecisionVisionFrame *frame,
                                      const DecisionConfig *config,
                                      DecisionPlan *plan);
+
+/* Ranks geometry-valid layouts using cut-edge and interior playing-card
+   features. A layout may stop the search early only when every reliable edge
+   event is paired; otherwise the bounded geometry search remains exhaustive. */
+DecisionResult Decision_SolveCard(const DecisionCardFrame *frame,
+                                  const DecisionConfig *config,
+                                  DecisionPlan *plan);
+
+DecisionResult Decision_SolveStrategy(DecisionStrategy strategy,
+                                      const DecisionVisionFrame *vision,
+                                      const DecisionCardFrame *card,
+                                      const DecisionConfig *config,
+                                      DecisionPlan *plan);
 
 /* Builds raised travel paths ending at pick_above and place_above. The decision
    task performs the two vertical servo strokes explicitly after both stepper

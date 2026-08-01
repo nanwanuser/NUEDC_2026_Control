@@ -7,6 +7,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import Polygon
+from matplotlib.transforms import Affine2D
 from matplotlib.widgets import Button, Slider
 
 from simulation.simulator import SimulationResult
@@ -32,6 +33,19 @@ def _piece_at_pose(vertices: np.ndarray, pick, pose: np.ndarray) -> np.ndarray:
     return relative @ rotation.T + pose[:2]
 
 
+def _polygon_affine(source: np.ndarray, destination: np.ndarray) -> Affine2D:
+    source_matrix = np.column_stack((source[:3], np.ones(3)))
+    coefficients = np.linalg.solve(source_matrix, destination[:3])
+    return Affine2D.from_values(
+        coefficients[0, 0],
+        coefficients[0, 1],
+        coefficients[1, 0],
+        coefficients[1, 1],
+        coefficients[2, 0],
+        coefficients[2, 1],
+    )
+
+
 class SimulationView:
     def __init__(self, figure, axes: dict[str, object], result: SimulationResult):
         self.figure = figure
@@ -42,6 +56,7 @@ class SimulationView:
         self._updating_slider = False
         self._piece_patches: dict[int, Polygon] = {}
         self._piece_labels = {}
+        self._texture_artists = {}
 
         self._draw_result()
         self._create_controls()
@@ -88,8 +103,11 @@ class SimulationView:
         for axis in (board_ax, pose_ax, limits_ax):
             self._style_axis(axis)
 
+        title = "Four-Servo Arm: Decision and Cartesian Trajectory Verification"
+        if self.result.card_validation is not None:
+            title = "Playing Card Quadrants: Native Pattern Strategy Verification"
         self.figure.suptitle(
-            "Four-Servo Arm: Decision and Cartesian Trajectory Verification",
+            title,
             fontsize=15,
             fontweight="bold",
             color=TEXT_COLOR,
@@ -115,7 +133,18 @@ class SimulationView:
         axis.set_aspect("equal", adjustable="box")
         axis.set_xlabel("X (mm)", fontsize=9)
         axis.set_ylabel("Y (mm)", fontsize=9)
-        axis.set_title("Decision Board", fontsize=11, fontweight="bold")
+        board_title = "Decision Board"
+        if self.result.card_validation is not None:
+            validation = self.result.card_validation
+            board_title = (
+                "Real Card Reconstruction | nodes:{} | topology:{} | "
+                "texture MAE:{:.1f}"
+            ).format(
+                self.result.decision_plan.search_nodes,
+                "OK" if validation.topology_ok else "FAIL",
+                validation.texture_mae,
+            )
+        axis.set_title(board_title, fontsize=10, fontweight="bold")
 
         for piece_index, execution in enumerate(self.result.moves):
             piece_id = execution.piece_id
@@ -132,13 +161,33 @@ class SimulationView:
             )
             axis.add_patch(target_patch)
             initial = self.result.initial_polygons[piece_id]
+            card_image = self.result.scenario.card_image
+            if card_image is not None:
+                base = np.asarray(
+                    self.result.scenario.base_polygons[piece_id], dtype=float
+                )
+                texture = card_image.quadrants_bgr[piece_id][:, :, ::-1]
+                minimum = base.min(axis=0)
+                maximum = base.max(axis=0)
+                artist = axis.imshow(
+                    texture,
+                    origin="upper",
+                    extent=(minimum[0], maximum[0], maximum[1], minimum[1]),
+                    interpolation="bilinear",
+                    zorder=3,
+                )
+                artist.set_transform(
+                    _polygon_affine(base, initial) + axis.transData
+                )
+                self._texture_artists[piece_id] = artist
             patch = Polygon(
                 initial,
                 closed=True,
-                facecolor=color,
-                edgecolor="white",
+                facecolor="none" if card_image is not None else color,
+                edgecolor="#222222" if card_image is not None else "white",
                 linewidth=1.2,
-                alpha=0.78,
+                alpha=1.0 if card_image is not None else 0.78,
+                zorder=4,
             )
             axis.add_patch(patch)
             self._piece_patches[piece_id] = patch
@@ -160,7 +209,7 @@ class SimulationView:
                 va="center",
                 fontsize=8,
                 fontweight="bold",
-                color="white",
+                color="#111111" if card_image is not None else "white",
                 zorder=6,
             )
 
@@ -374,6 +423,15 @@ class SimulationView:
                 polygon = self.result.initial_polygons[piece_id]
             self._piece_patches[piece_id].set_xy(polygon)
             self._piece_labels[piece_id].set_position(polygon.mean(axis=0))
+            texture_artist = self._texture_artists.get(piece_id)
+            if texture_artist is not None:
+                base = np.asarray(
+                    self.result.scenario.base_polygons[piece_id], dtype=float
+                )
+                texture_artist.set_transform(
+                    _polygon_affine(base, polygon)
+                    + self.axes["board"].transData
+                )
 
         x, y, z, yaw = sample.pose
         yaw_rad = np.deg2rad(yaw)

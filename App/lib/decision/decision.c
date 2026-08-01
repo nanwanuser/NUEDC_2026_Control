@@ -10,6 +10,12 @@
 #define DECISION_MIN_POLYGON_AREA_MM2  1.0f
 #define DECISION_WAYPOINT_EPSILON_MM   0.1f
 #define DECISION_WAYPOINT_EPSILON_DEG  0.1f
+#define DECISION_CARD_SEAM_ANGLE_SINE   0.12f
+#define DECISION_CARD_SEAM_DISTANCE_MM  2.0f
+#define DECISION_CARD_EVENT_MATCH_MM    5.0f
+#define DECISION_CARD_PRUNE_CONFIDENCE  128U
+#define DECISION_CARD_UNMATCHED_COST     25.0f
+#define DECISION_CARD_PRIMITIVE_WEIGHT   0.05f
 
 typedef struct {
     float cosine;
@@ -40,6 +46,10 @@ typedef struct {
     float best_min_y;
     float best_max_y;
     RigidTransform best_transforms[DECISION_MAX_PIECES];
+    uint8_t card_mode;
+    DecisionCardPieceFeatures card_features[DECISION_MAX_PIECES];
+    uint16_t best_card_matches;
+    uint16_t reliable_card_event_count;
 } GeneralSearch;
 
 static float square(float value)
@@ -829,6 +839,416 @@ static float layout_overlap_area(const GeneralSearch *search,
     return total;
 }
 
+typedef struct {
+    float cost;
+    uint16_t matches;
+    uint16_t reliable_edge_events_matched;
+} CardLayoutScore;
+
+static float point_dot(DecisionPoint left, DecisionPoint right)
+{
+    return left.x_mm * right.x_mm + left.y_mm * right.y_mm;
+}
+
+static float point_distance(DecisionPoint left, DecisionPoint right)
+{
+    return point_length(point_subtract(left, right));
+}
+
+static uint8_t edges_form_card_seam(DecisionPoint a0,
+                                    DecisionPoint a1,
+                                    DecisionPoint b0,
+                                    DecisionPoint b1)
+{
+    DecisionPoint a = point_subtract(a1, a0);
+    DecisionPoint b = point_subtract(b1, b0);
+    float a_length = point_length(a);
+    float b_length = point_length(b);
+    float b0_distance;
+    float b1_distance;
+    float b0_along;
+    float b1_along;
+    float overlap_start;
+    float overlap_end;
+
+    if (a_length <= DECISION_GEOMETRY_EPSILON_MM ||
+        b_length <= DECISION_GEOMETRY_EPSILON_MM ||
+        fabsf(point_cross(a, b)) /
+                (a_length * b_length) > DECISION_CARD_SEAM_ANGLE_SINE) {
+        return 0U;
+    }
+
+    b0_distance = fabsf(point_cross(a, point_subtract(b0, a0))) / a_length;
+    b1_distance = fabsf(point_cross(a, point_subtract(b1, a0))) / a_length;
+    if (b0_distance > DECISION_CARD_SEAM_DISTANCE_MM ||
+        b1_distance > DECISION_CARD_SEAM_DISTANCE_MM) {
+        return 0U;
+    }
+
+    b0_along = point_dot(point_subtract(b0, a0), a) / a_length;
+    b1_along = point_dot(point_subtract(b1, a0), a) / a_length;
+    overlap_start = fmaxf(0.0f, fminf(b0_along, b1_along));
+    overlap_end = fminf(a_length, fmaxf(b0_along, b1_along));
+    return (uint8_t)(overlap_end - overlap_start >=
+                     DECISION_MIN_EDGE_OVERLAP_MM);
+}
+
+static DecisionPoint card_event_point(const DecisionPiece *piece,
+                                      const DecisionCardEdgeEvent *event,
+                                      const RigidTransform *transform)
+{
+    uint8_t next =
+        (uint8_t)((event->edge_index + 1U) % piece->vertex_count);
+    float fraction = (float)event->position_q8 / 255.0f;
+    DecisionPoint point;
+
+    point.x_mm = piece->vertices[event->edge_index].x_mm +
+                 fraction * (piece->vertices[next].x_mm -
+                             piece->vertices[event->edge_index].x_mm);
+    point.y_mm = piece->vertices[event->edge_index].y_mm +
+                 fraction * (piece->vertices[next].y_mm -
+                             piece->vertices[event->edge_index].y_mm);
+    return transform_point(transform, point);
+}
+
+static float card_event_tangent_difference(
+    const DecisionCardEdgeEvent *left,
+    const RigidTransform *left_transform,
+    const DecisionCardEdgeEvent *right,
+    const RigidTransform *right_transform)
+{
+    float left_angle = (float)left->tangent_deg +
+        atan2f(left_transform->sine, left_transform->cosine) *
+            180.0f / DECISION_PI;
+    float right_angle = (float)right->tangent_deg +
+        atan2f(right_transform->sine, right_transform->cosine) *
+            180.0f / DECISION_PI;
+    float difference = fabsf(normalize_degrees(left_angle - right_angle));
+
+    return difference > 90.0f ? 180.0f - difference : difference;
+}
+
+/* Reject an attachment only when both sides carry reliable evidence and none
+   of it can describe the same crossing. A blank side remains inconclusive: a
+   faint print may have been missed by vision, so it must not become a hard
+   geometric constraint. */
+/* Returns 2 for a positively matched seam, 1 when pattern evidence is absent,
+   and 0 for contradictory evidence. */
+static uint8_t card_attachment_quality(
+    const GeneralSearch *search,
+    uint8_t left_piece_index,
+    uint8_t left_edge,
+    const RigidTransform *left_transform,
+    uint8_t right_piece_index,
+    uint8_t right_edge,
+    const RigidTransform *right_transform)
+{
+    const DecisionCardPieceFeatures *left_features;
+    const DecisionCardPieceFeatures *right_features;
+    const DecisionPiece *left_piece;
+    const DecisionPiece *right_piece;
+    uint8_t left_count = 0U;
+    uint8_t right_count = 0U;
+    uint8_t left_index;
+
+    if (search->card_mode == 0U) {
+        return 1U;
+    }
+    left_features = &search->card_features[left_piece_index];
+    right_features = &search->card_features[right_piece_index];
+    left_piece = &search->pieces[left_piece_index];
+    right_piece = &search->pieces[right_piece_index];
+
+    for (left_index = 0U; left_index < left_features->edge_event_count;
+         ++left_index) {
+        const DecisionCardEdgeEvent *left =
+            &left_features->edge_events[left_index];
+        uint8_t right_index;
+
+        if (left->edge_index != left_edge ||
+            left->confidence < DECISION_CARD_PRUNE_CONFIDENCE) {
+            continue;
+        }
+        ++left_count;
+        for (right_index = 0U;
+             right_index < right_features->edge_event_count;
+             ++right_index) {
+            const DecisionCardEdgeEvent *right =
+                &right_features->edge_events[right_index];
+            DecisionPoint left_point;
+            DecisionPoint right_point;
+
+            if (right->edge_index != right_edge ||
+                right->confidence < DECISION_CARD_PRUNE_CONFIDENCE) {
+                continue;
+            }
+            if (left_count == 1U) {
+                ++right_count;
+            }
+            if (left->color != right->color) {
+                continue;
+            }
+            left_point = card_event_point(left_piece, left, left_transform);
+            right_point = card_event_point(
+                right_piece, right, right_transform);
+            if (point_distance(left_point, right_point) <=
+                DECISION_CARD_EVENT_MATCH_MM) {
+                return 2U;
+            }
+        }
+    }
+
+    if (left_count == 0U) {
+        return 1U;
+    }
+    if (right_count != 0U) {
+        return 0U;
+    }
+    return 1U;
+}
+
+static void match_card_seam_events(
+    const GeneralSearch *search,
+    const RigidTransform *transforms,
+    uint8_t left_piece_index,
+    uint8_t left_edge,
+    uint8_t right_piece_index,
+    uint8_t right_edge,
+    uint8_t matched[DECISION_MAX_PIECES]
+                   [DECISION_CARD_MAX_EDGE_EVENTS_PER_PIECE],
+    CardLayoutScore *score)
+{
+    const DecisionCardPieceFeatures *left_features =
+        &search->card_features[left_piece_index];
+    const DecisionCardPieceFeatures *right_features =
+        &search->card_features[right_piece_index];
+    const DecisionPiece *left_piece =
+        &search->pieces[left_piece_index];
+    const DecisionPiece *right_piece =
+        &search->pieces[right_piece_index];
+    uint8_t left_event_index;
+
+    for (left_event_index = 0U;
+         left_event_index < left_features->edge_event_count;
+         ++left_event_index) {
+        const DecisionCardEdgeEvent *left_event =
+            &left_features->edge_events[left_event_index];
+        DecisionPoint left_point;
+        float best_cost = FLT_MAX;
+        uint8_t best_right_event = 0U;
+        uint8_t found = 0U;
+        uint8_t right_event_index;
+
+        if (left_event->edge_index != left_edge ||
+            matched[left_piece_index][left_event_index] != 0U) {
+            continue;
+        }
+        left_point = card_event_point(
+            left_piece, left_event, &transforms[left_piece_index]);
+
+        for (right_event_index = 0U;
+             right_event_index < right_features->edge_event_count;
+             ++right_event_index) {
+            const DecisionCardEdgeEvent *right_event =
+                &right_features->edge_events[right_event_index];
+            DecisionPoint right_point;
+            float distance;
+            float candidate_cost;
+
+            if (right_event->edge_index != right_edge ||
+                right_event->color != left_event->color ||
+                matched[right_piece_index][right_event_index] != 0U) {
+                continue;
+            }
+            right_point = card_event_point(
+                right_piece, right_event, &transforms[right_piece_index]);
+            distance = point_distance(left_point, right_point);
+            if (distance > DECISION_CARD_EVENT_MATCH_MM) {
+                continue;
+            }
+            candidate_cost = distance +
+                0.25f * fabsf((float)left_event->width_q4_mm -
+                              (float)right_event->width_q4_mm) +
+                0.05f * card_event_tangent_difference(
+                    left_event, &transforms[left_piece_index],
+                    right_event, &transforms[right_piece_index]);
+            if (candidate_cost < best_cost) {
+                best_cost = candidate_cost;
+                best_right_event = right_event_index;
+                found = 1U;
+            }
+        }
+
+        if (found != 0U) {
+            matched[left_piece_index][left_event_index] = 1U;
+            matched[right_piece_index][best_right_event] = 1U;
+            score->cost += best_cost;
+            ++score->matches;
+            if (left_event->confidence >= DECISION_CARD_PRUNE_CONFIDENCE &&
+                right_features->edge_events[best_right_event].confidence >=
+                    DECISION_CARD_PRUNE_CONFIDENCE) {
+                score->reliable_edge_events_matched += 2U;
+            }
+        }
+    }
+}
+
+static CardLayoutScore score_card_layout(
+    const GeneralSearch *search,
+    const RigidTransform *transforms,
+    float rect_angle_rad,
+    float min_x,
+    float max_x,
+    float min_y,
+    float max_y)
+{
+    uint8_t matched[DECISION_MAX_PIECES]
+                   [DECISION_CARD_MAX_EDGE_EVENTS_PER_PIECE] = {{0U}};
+    CardLayoutScore score = {0.0f, 0U, 0U};
+    uint8_t left_piece_index;
+
+    for (left_piece_index = 0U;
+         (uint8_t)(left_piece_index + 1U) < search->piece_count;
+         ++left_piece_index) {
+        const DecisionPiece *left_piece =
+            &search->pieces[left_piece_index];
+        uint8_t right_piece_index;
+
+        for (right_piece_index = (uint8_t)(left_piece_index + 1U);
+             right_piece_index < search->piece_count;
+             ++right_piece_index) {
+            const DecisionPiece *right_piece =
+                &search->pieces[right_piece_index];
+            uint8_t left_edge;
+
+            for (left_edge = 0U; left_edge < left_piece->vertex_count;
+                 ++left_edge) {
+                uint8_t left_next =
+                    (uint8_t)((left_edge + 1U) % left_piece->vertex_count);
+                DecisionPoint left_start = transform_point(
+                    &transforms[left_piece_index],
+                    left_piece->vertices[left_edge]);
+                DecisionPoint left_end = transform_point(
+                    &transforms[left_piece_index],
+                    left_piece->vertices[left_next]);
+                uint8_t right_edge;
+
+                for (right_edge = 0U;
+                     right_edge < right_piece->vertex_count;
+                     ++right_edge) {
+                    uint8_t right_next = (uint8_t)(
+                        (right_edge + 1U) % right_piece->vertex_count);
+                    DecisionPoint right_start = transform_point(
+                        &transforms[right_piece_index],
+                        right_piece->vertices[right_edge]);
+                    DecisionPoint right_end = transform_point(
+                        &transforms[right_piece_index],
+                        right_piece->vertices[right_next]);
+
+                    if (edges_form_card_seam(left_start, left_end,
+                                             right_start, right_end) != 0U) {
+                        match_card_seam_events(
+                            search, transforms,
+                            left_piece_index, left_edge,
+                            right_piece_index, right_edge,
+                            matched, &score);
+                    }
+                }
+            }
+        }
+    }
+
+    for (left_piece_index = 0U;
+         left_piece_index < search->piece_count;
+         ++left_piece_index) {
+        const DecisionCardPieceFeatures *features =
+            &search->card_features[left_piece_index];
+        uint8_t event_index;
+
+        for (event_index = 0U; event_index < features->edge_event_count;
+             ++event_index) {
+            if (matched[left_piece_index][event_index] == 0U) {
+                score.cost += DECISION_CARD_UNMATCHED_COST;
+            }
+        }
+    }
+
+    {
+        float cosine = cosf(rect_angle_rad);
+        float sine = sinf(rect_angle_rad);
+        float center_x = 0.5f * (min_x + max_x);
+        float center_y = 0.5f * (min_y + max_y);
+        DecisionPoint rectangle_center = {
+            cosine * center_x - sine * center_y,
+            sine * center_x + cosine * center_y
+        };
+
+        for (left_piece_index = 0U;
+             left_piece_index < search->piece_count;
+             ++left_piece_index) {
+            const DecisionCardPieceFeatures *features =
+                &search->card_features[left_piece_index];
+            uint8_t primitive_index;
+
+            for (primitive_index = 0U;
+                 primitive_index < features->primitive_count;
+                 ++primitive_index) {
+                const DecisionCardPrimitive *primitive =
+                    &features->primitives[primitive_index];
+                DecisionPoint point = transform_point(
+                    &transforms[left_piece_index], primitive->center);
+                DecisionPoint reflected = {
+                    2.0f * rectangle_center.x_mm - point.x_mm,
+                    2.0f * rectangle_center.y_mm - point.y_mm
+                };
+                float best_distance = FLT_MAX;
+                uint8_t other_piece_index;
+
+                for (other_piece_index = 0U;
+                     other_piece_index < search->piece_count;
+                     ++other_piece_index) {
+                    const DecisionCardPieceFeatures *other_features =
+                        &search->card_features[other_piece_index];
+                    uint8_t other_primitive_index;
+
+                    for (other_primitive_index = 0U;
+                         other_primitive_index < other_features->primitive_count;
+                         ++other_primitive_index) {
+                        const DecisionCardPrimitive *other =
+                            &other_features->primitives[other_primitive_index];
+                        DecisionPoint other_point;
+                        float distance;
+
+                        if (other->color != primitive->color ||
+                            other->kind != primitive->kind ||
+                            (other_piece_index == left_piece_index &&
+                             other_primitive_index == primitive_index)) {
+                            continue;
+                        }
+                        other_point = transform_point(
+                            &transforms[other_piece_index], other->center);
+                        distance = point_distance(reflected, other_point);
+                        if (distance < best_distance) {
+                            best_distance = distance;
+                        }
+                    }
+                }
+
+                if (best_distance < FLT_MAX) {
+                    score.cost += DECISION_CARD_PRIMITIVE_WEIGHT *
+                                  fminf(best_distance, 20.0f);
+                    if (best_distance <= DECISION_CARD_EVENT_MATCH_MM) {
+                        ++score.matches;
+                    }
+                } else {
+                    score.cost += DECISION_CARD_PRIMITIVE_WEIGHT * 20.0f;
+                }
+            }
+        }
+    }
+    return score;
+}
+
 static void evaluate_complete_layout(GeneralSearch *search,
                                      const RigidTransform *transforms,
                                      float attachment_error)
@@ -862,6 +1282,7 @@ static void evaluate_complete_layout(GeneralSearch *search,
             float bounding_area;
             float fill_error_ratio;
             float score;
+            CardLayoutScore card_score = {0.0f, 0U, 0U};
 
             project_layout(search, transforms, angle,
                            &min_x, &max_x, &min_y, &max_y);
@@ -914,9 +1335,26 @@ static void evaluate_complete_layout(GeneralSearch *search,
             score = fill_error_ratio +
                     attachment_error /
                     (long_side + short_side + DECISION_GEOMETRY_EPSILON_MM);
+            if (search->card_mode != 0U) {
+                card_score = score_card_layout(
+                    search, transforms, angle, min_x, max_x, min_y, max_y);
+
+                /* Pattern evidence is the primary tie-break in card mode. The
+                   geometry term remains only to make equally patterned layouts
+                   deterministic. */
+                score += card_score.cost;
+                if (score < search->best_score) {
+                    search->best_card_matches = card_score.matches;
+                }
+            }
             if (score < search->best_score) {
-                search->good_enough =
-                    (uint8_t)(score <= DECISION_GOOD_ENOUGH_SCORE);
+                search->good_enough = (uint8_t)(
+                    (search->card_mode == 0U &&
+                     score <= DECISION_GOOD_ENOUGH_SCORE) ||
+                    (search->card_mode != 0U &&
+                     search->reliable_card_event_count != 0U &&
+                     card_score.reliable_edge_events_matched ==
+                         search->reliable_card_event_count));
                 search->best_score = score;
                 search->best_rect_angle_rad = angle;
                 search->best_min_x = min_x;
@@ -1101,6 +1539,9 @@ static void search_layout(GeneralSearch *search,
                           float attachment_error)
 {
     uint8_t placed_index;
+    uint8_t attachment_pass;
+    uint8_t attachment_pass_count =
+        search->card_mode == 0U ? 1U : 2U;
 
     ++search->nodes;
     if (search->nodes > search->config->max_search_nodes) {
@@ -1121,9 +1562,16 @@ static void search_layout(GeneralSearch *search,
         return;
     }
 
-    for (placed_index = 0U;
-         placed_index < search->piece_count;
-         ++placed_index) {
+    /* Card mode visits evidence-backed joins before inconclusive joins. This
+       does not remove either class; it makes a fully supported solution reach
+       the strict card early-exit condition without enumerating the blank-edge
+       branches first. */
+    for (attachment_pass = 0U;
+         attachment_pass < attachment_pass_count;
+         ++attachment_pass) {
+      for (placed_index = 0U;
+           placed_index < search->piece_count;
+           ++placed_index) {
         const DecisionPiece *placed_piece;
         uint8_t placed_edge;
 
@@ -1171,6 +1619,7 @@ static void search_layout(GeneralSearch *search,
                         uint8_t compare_index;
                         uint8_t previous_placed_edges;
                         uint8_t previous_new_edges;
+                        uint8_t card_quality;
 
                         if (align_piece_edges(
                                 placed_piece,
@@ -1184,6 +1633,21 @@ static void search_layout(GeneralSearch *search,
                                 &corner_error,
                                 &spent_placed_edge,
                                 &spent_new_edge) == 0U) {
+                            continue;
+                        }
+
+                        card_quality = card_attachment_quality(
+                            search,
+                            placed_index,
+                            placed_edge,
+                            &transforms[placed_index],
+                            new_index,
+                            new_edge,
+                            &candidate_transform);
+                        if (card_quality == 0U ||
+                            (search->card_mode != 0U &&
+                             ((attachment_pass == 0U && card_quality != 2U) ||
+                              (attachment_pass == 1U && card_quality != 1U)))) {
                             continue;
                         }
 
@@ -1238,13 +1702,15 @@ static void search_layout(GeneralSearch *search,
 
                         used_edges[placed_index] = previous_placed_edges;
                         used_edges[new_index] = previous_new_edges;
-                        if (search->limit_reached != 0U) {
+                        if (search->limit_reached != 0U ||
+                            search->good_enough != 0U) {
                             return;
                         }
                     }
                 }
             }
         }
+      }
     }
 }
 
@@ -1275,9 +1741,63 @@ void Decision_GetDefaultConfig(DecisionConfig *config)
     config->max_search_nodes = DECISION_DEFAULT_MAX_NODES;
 }
 
-DecisionResult Decision_SolveGeneral(const DecisionVisionFrame *frame,
-                                     const DecisionConfig *config,
-                                     DecisionPlan *plan)
+static uint8_t card_frame_is_valid(const DecisionCardFrame *frame)
+{
+    uint8_t piece_index;
+
+    if (frame == NULL || frame->piece_count == 0U ||
+        frame->piece_count != frame->vision.piece_count ||
+        frame->piece_count > DECISION_MAX_PIECES) {
+        return 0U;
+    }
+
+    for (piece_index = 0U; piece_index < frame->piece_count; ++piece_index) {
+        const DecisionPiece *piece = &frame->vision.pieces[piece_index];
+        const DecisionCardPieceFeatures *features = &frame->pieces[piece_index];
+        uint8_t event_index;
+        uint8_t primitive_index;
+
+        if (features->piece_id != piece->id ||
+            features->edge_event_count >
+                DECISION_CARD_MAX_EDGE_EVENTS_PER_PIECE ||
+            features->primitive_count >
+                DECISION_CARD_MAX_PRIMITIVES_PER_PIECE) {
+            return 0U;
+        }
+        for (event_index = 0U; event_index < features->edge_event_count;
+             ++event_index) {
+            const DecisionCardEdgeEvent *event =
+                &features->edge_events[event_index];
+
+            if (event->edge_index >= piece->vertex_count ||
+                (event->color != DECISION_CARD_COLOR_RED &&
+                 event->color != DECISION_CARD_COLOR_BLACK)) {
+                return 0U;
+            }
+        }
+        for (primitive_index = 0U;
+             primitive_index < features->primitive_count;
+             ++primitive_index) {
+            const DecisionCardPrimitive *primitive =
+                &features->primitives[primitive_index];
+
+            if (!point_is_finite(primitive->center) ||
+                !isfinite(primitive->area_mm2) ||
+                primitive->area_mm2 < 0.0f ||
+                (primitive->color != DECISION_CARD_COLOR_RED &&
+                 primitive->color != DECISION_CARD_COLOR_BLACK)) {
+                return 0U;
+            }
+        }
+    }
+    return 1U;
+}
+
+static DecisionResult solve_general_internal(
+    const DecisionVisionFrame *frame,
+    const DecisionConfig *config,
+    const DecisionCardFrame *card_frame,
+    DecisionPlan *plan)
 {
     GeneralSearch search;
     RigidTransform transforms[DECISION_MAX_PIECES];
@@ -1310,12 +1830,15 @@ DecisionResult Decision_SolveGeneral(const DecisionVisionFrame *frame,
         }
     }
     search.config = config;
+    search.card_mode = (uint8_t)(card_frame != NULL);
     search.piece_count = frame->piece_count;
     search.best_score = FLT_MAX;
     search.max_diagonal_mm = sqrtf(square(config->max_long_side_mm) +
                                    square(config->max_short_side_mm));
 
     for (piece_index = 0U; piece_index < search.piece_count; ++piece_index) {
+        uint8_t event_index;
+
         search.total_area += polygon_signed_area(
             search.pieces[piece_index].vertices,
             search.pieces[piece_index].vertex_count);
@@ -1323,6 +1846,43 @@ DecisionResult Decision_SolveGeneral(const DecisionVisionFrame *frame,
         transforms[piece_index].sine = 0.0f;
         transforms[piece_index].tx = 0.0f;
         transforms[piece_index].ty = 0.0f;
+        if (card_frame != NULL) {
+            float source_area = polygon_signed_area(
+                frame->pieces[piece_index].vertices,
+                frame->pieces[piece_index].vertex_count);
+
+            search.card_features[piece_index] =
+                card_frame->pieces[piece_index];
+            if (source_area < 0.0f) {
+                uint8_t vertex_count =
+                    frame->pieces[piece_index].vertex_count;
+
+                for (event_index = 0U;
+                     event_index < search.card_features[piece_index]
+                         .edge_event_count;
+                     ++event_index) {
+                    DecisionCardEdgeEvent *event =
+                        &search.card_features[piece_index]
+                             .edge_events[event_index];
+
+                    event->edge_index = (uint8_t)(
+                        (2U * vertex_count - 2U - event->edge_index) %
+                        vertex_count);
+                    event->position_q8 =
+                        (uint8_t)(255U - event->position_q8);
+                }
+            }
+            for (event_index = 0U;
+                 event_index < search.card_features[piece_index]
+                     .edge_event_count;
+                 ++event_index) {
+                if (search.card_features[piece_index]
+                        .edge_events[event_index].confidence >=
+                    DECISION_CARD_PRUNE_CONFIDENCE) {
+                    ++search.reliable_card_event_count;
+                }
+            }
+        }
     }
 
     /* Largest rectangle the pieces could still fill to the accuracy the fill gate
@@ -1336,6 +1896,9 @@ DecisionResult Decision_SolveGeneral(const DecisionVisionFrame *frame,
         return search.limit_reached != 0U ?
             DECISION_RESULT_SEARCH_LIMIT : DECISION_RESULT_NO_SOLUTION;
     }
+    if (search.card_mode != 0U && search.best_card_matches == 0U) {
+        return DECISION_RESULT_CARD_AMBIGUOUS;
+    }
 
     rectangle_center_x = 0.5f * (search.best_min_x + search.best_max_x);
     rectangle_center_y = 0.5f * (search.best_min_y + search.best_max_y);
@@ -1348,6 +1911,7 @@ DecisionResult Decision_SolveGeneral(const DecisionVisionFrame *frame,
 
     (void)memset(plan, 0, sizeof(*plan));
     plan->seq = frame->seq;
+    plan->search_nodes = search.nodes;
     for (piece_index = 0U; piece_index < search.piece_count; ++piece_index) {
         /* The camera supplies the calibrated magnet target. Preserve it exactly
            instead of replacing it with a grid-searched polygon interior point. */
@@ -1376,6 +1940,54 @@ DecisionResult Decision_SolveGeneral(const DecisionVisionFrame *frame,
         ++plan->move_count;
     }
     return DECISION_RESULT_OK;
+}
+
+DecisionResult Decision_SolveGeneral(const DecisionVisionFrame *frame,
+                                     const DecisionConfig *config,
+                                     DecisionPlan *plan)
+{
+    return solve_general_internal(frame, config, NULL, plan);
+}
+
+DecisionResult Decision_SolveCard(const DecisionCardFrame *frame,
+                                  const DecisionConfig *config,
+                                  DecisionPlan *plan)
+{
+    uint8_t piece_index;
+    uint8_t has_pattern_evidence = 0U;
+
+    if (card_frame_is_valid(frame) == 0U) {
+        return DECISION_RESULT_INVALID_FRAME;
+    }
+    for (piece_index = 0U; piece_index < frame->piece_count; ++piece_index) {
+        if (frame->pieces[piece_index].edge_event_count != 0U ||
+            frame->pieces[piece_index].primitive_count != 0U) {
+            has_pattern_evidence = 1U;
+            break;
+        }
+    }
+    if (has_pattern_evidence == 0U) {
+        return DECISION_RESULT_CARD_AMBIGUOUS;
+    }
+    return solve_general_internal(&frame->vision, config, frame, plan);
+}
+
+DecisionResult Decision_SolveStrategy(DecisionStrategy strategy,
+                                      const DecisionVisionFrame *vision,
+                                      const DecisionCardFrame *card,
+                                      const DecisionConfig *config,
+                                      DecisionPlan *plan)
+{
+    if (strategy == DECISION_STRATEGY_GEOMETRIC) {
+        return Decision_Solve(vision, config, plan);
+    }
+    if (strategy == DECISION_STRATEGY_CARD_PATTERN) {
+        if (card == NULL) {
+            return DECISION_RESULT_INVALID_ARGUMENT;
+        }
+        return Decision_SolveCard(card, config, plan);
+    }
+    return DECISION_RESULT_INVALID_ARGUMENT;
 }
 
 DecisionResult Decision_Solve(const DecisionVisionFrame *frame,

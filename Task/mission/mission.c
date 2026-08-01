@@ -215,8 +215,10 @@ static void build_request(MissionId mission, DecisionTaskRequest *request)
     CraneControlConfig crane_config;
     TrajectoryLimits default_limits;
 
-    (void)mission;
     DecisionTask_GetDefaultRequest(request);
+    request->strategy = mission == MISSION_CARD_PATTERN
+        ? DECISION_STRATEGY_CARD_PATTERN
+        : DECISION_STRATEGY_GEOMETRIC;
     CraneControl_GetConfig(&crane_config);
     default_limits = request->execution.limits;
 
