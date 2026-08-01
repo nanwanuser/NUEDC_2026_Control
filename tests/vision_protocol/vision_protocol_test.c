@@ -181,28 +181,11 @@ static int test_three_stable_frames(void)
     return 0;
 }
 
-static int test_ack(void)
-{
-    uint8_t ack[VISION_PROTOCOL_ACK_FRAME_LENGTH];
-    uint16_t crc;
-
-    ASSERT_TRUE(VisionProtocol_EncodeAck(0x1234U,
-                                        VISION_PROTOCOL_ACK_ACCEPTED,
-                                        ack,
-                                        sizeof(ack)) == sizeof(ack));
-    ASSERT_TRUE(ack[4] == 0x34U && ack[5] == 0x12U);
-    ASSERT_TRUE(ack[11] == 0x0DU && ack[12] == 0x0AU);
-    crc = VisionProtocol_Crc16(&ack[2], 7U);
-    ASSERT_TRUE(ack[9] == (uint8_t)crc && ack[10] == (uint8_t)(crc >> 8U));
-    return 0;
-}
-
 int main(void)
 {
     if (test_decode_four_pieces() != 0) return 1;
     if (test_crc_and_end_rejected() != 0) return 1;
     if (test_three_stable_frames() != 0) return 1;
-    if (test_ack() != 0) return 1;
     puts("vision protocol tests passed");
     return 0;
 }

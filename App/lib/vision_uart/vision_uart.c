@@ -12,12 +12,8 @@
 
 #define VISION_UART_TASK_PERIOD_MS       1U
 #define VISION_UART_FRAME_TIMEOUT_MS     50U
-#define VISION_UART_TX_TIMEOUT_MS        20U
 #define VISION_UART_RX_CHUNK_SIZE        VISION_PROTOCOL_MAX_FRAME_LENGTH
 #define VISION_UART_RX_RING_SIZE         512U
-/* Debug mode: keep the vision module streaming after a stable frame is accepted.
-   Set to 1U for contest operation when ACK_ACCEPTED should stop its sender. */
-#define VISION_UART_SEND_STOP_ACK         0U
 
 static uint8_t VisionUart_RxChunk[VISION_UART_RX_CHUNK_SIZE];
 static uint8_t VisionUart_RxRing[VISION_UART_RX_RING_SIZE];
@@ -83,26 +79,16 @@ static uint8_t start_receive(void)
     return 1U;
 }
 
-static void stop_receive(void)
+static void close_receive(void)
 {
     VisionUart_Receiving = 0U;
     (void)HAL_UART_AbortReceive(&huart1);
-}
+    (void)HAL_UART_DeInit(&huart1);
 
-static void send_ack(uint16_t seq, VisionProtocolAckStatus status)
-{
-    uint8_t frame[VISION_PROTOCOL_ACK_FRAME_LENGTH];
-    size_t length = VisionProtocol_EncodeAck(seq,
-                                             status,
-                                             frame,
-                                             sizeof(frame));
-
-    if (length != 0U) {
-        (void)HAL_UART_Transmit(&huart1,
-                               frame,
-                               (uint16_t)length,
-                               VISION_UART_TX_TIMEOUT_MS);
-    }
+    taskENTER_CRITICAL();
+    VisionUart_RxHead = 0U;
+    VisionUart_RxTail = 0U;
+    taskEXIT_CRITICAL();
 }
 
 void VisionUart_Init(void)
@@ -123,6 +109,10 @@ void VisionUart_Init(void)
     (void)memset(&output, 0, sizeof(output));
     output.state = VISION_UART_STATE_IDLE;
     VisionUart_Output = output;
+
+    /* The start key owns the receive window. USART1 stays physically closed
+       before the first acquisition just as it does between later runs. */
+    (void)HAL_UART_DeInit(&huart1);
 }
 
 uint8_t VisionUart_Arm(const DecisionTaskRequest *base_request, uint32_t arm_id)
@@ -199,6 +189,7 @@ void VisionUart_App(void *argument)
             if (start_receive() != 0U) {
                 output.state = VISION_UART_STATE_RECEIVING;
             } else {
+                close_receive();
                 output.state = VISION_UART_STATE_ERROR;
                 submitted = 1U;
             }
@@ -210,7 +201,7 @@ void VisionUart_App(void *argument)
             VisionUart_AbortRequested = 0U;
             taskEXIT_CRITICAL();
             if (submitted == 0U) {
-                stop_receive();
+                close_receive();
                 submitted = 1U;
                 output.state = VISION_UART_STATE_IDLE;
                 output.stable_count = 0U;
@@ -264,25 +255,17 @@ void VisionUart_App(void *argument)
 
                     request = base_request;
                     request.vision = stable_packet.frame;
-                    stop_receive();
-                    /* Only claim acceptance once the decision really took the
-                       request, so the vision host is not told to stop sending
-                       after a failed handover. */
+                    /* Close the receive window before handing the stable data
+                       over. Any later bytes are ignored until the next arm. */
+                    close_receive();
                     if (DecisionTask_Submit(&request) != 0U) {
                         output.state = VISION_UART_STATE_SUBMITTED;
-                        if (VISION_UART_SEND_STOP_ACK != 0U) {
-                            send_ack(packet.seq,
-                                     VISION_PROTOCOL_ACK_ACCEPTED);
-                        }
                     } else {
                         output.state = VISION_UART_STATE_ERROR;
-                        send_ack(packet.seq, VISION_PROTOCOL_ACK_INVALID);
                     }
-                    (void)HAL_UART_DeInit(&huart1);
                     submitted = 1U;
                 } else {
                     output.stable_count = stabilizer.stable_count;
-                    send_ack(packet.seq, VISION_PROTOCOL_ACK_OK);
                 }
                 publish_output(&output);
             } else if (result != VISION_PROTOCOL_RESULT_NONE) {
@@ -310,6 +293,7 @@ void VisionUart_App(void *argument)
            purpose, and the `submitted` guard is what keeps that from being read
            as a stall and overwriting the state published a few lines above. */
         if (submitted == 0U && VisionUart_Receiving == 0U) {
+            close_receive();
             output.state = VISION_UART_STATE_ERROR;
             submitted = 1U;
             publish_output(&output);

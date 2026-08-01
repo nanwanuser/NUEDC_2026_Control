@@ -92,6 +92,7 @@ typedef struct {
     uint8_t axes_at_target;
     int32_t yaw_position_error_units;
     int32_t reach_position_error_units;
+    uint8_t returning_to_initial;
     uint8_t initialized;
 } CraneControlState;
 
@@ -142,6 +143,11 @@ CraneControlStatus CraneControl_CommandLift(CraneLiftPosition position);
 
 /** Queue an electromagnet command in the crane task. */
 CraneControlStatus CraneControl_CommandGrip(uint8_t enabled);
+
+/** Queue a safe return to the startup posture. The crane task raises the lift,
+ * releases the magnet, centres the wrist, and sends both stepper targets with
+ * the drive's absolute-position command. */
+CraneControlStatus CraneControl_ReturnToInitial(void);
 
 /**
  * @brief Copy the active configuration, so callers can place their targets in

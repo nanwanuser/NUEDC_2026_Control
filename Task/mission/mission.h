@@ -31,7 +31,9 @@ typedef enum {
     MISSION_STATE_RUNNING,
     MISSION_STATE_COMPLETE,
     MISSION_STATE_FAILED,
-    MISSION_STATE_TIMEOUT
+    MISSION_STATE_TIMEOUT,
+    /* Puzzle complete; completion tone is finishing or the axes are returning. */
+    MISSION_STATE_RETURNING
 } MissionState;
 
 /* Why an acquisition failed, beeped out after the failure tone. The numeric
@@ -132,6 +134,10 @@ typedef struct {
 } MissionOutput;
 
 void Mission_Init(void);
+
+/* Emit the one-shot startup indication after the crane has homed and verified
+   both drives are in communication position mode. */
+void Mission_SignalCraneReady(void);
 
 /* Same effect as pressing the matching key, for host or debug triggering. */
 uint8_t Mission_Start(MissionId mission);

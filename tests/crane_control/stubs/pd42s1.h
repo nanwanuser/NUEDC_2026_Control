@@ -39,6 +39,13 @@ typedef enum {
     PD42S1_ARRIVAL_REACHED = 1,
 } pd42s1_arrival_t;
 
+typedef enum {
+    PD42S1_WORK_MODE_COMMUNICATION_POSITION = 0,
+    PD42S1_WORK_MODE_COMMUNICATION_SPEED = 1,
+    PD42S1_WORK_MODE_COMMUNICATION_TORQUE = 2,
+    PD42S1_WORK_MODE_HOME = 7,
+} pd42s1_work_mode_t;
+
 void pd42s1_init(void);
 max485_status_t pd42s1_set_torque(uint8_t motor_id,
                                  pd42s1_direction_t direction,
@@ -63,5 +70,14 @@ max485_status_t pd42s1_receive_response(uint8_t motor_id,
 max485_status_t pd42s1_read_arrival_flag(uint8_t motor_id,
                                         pd42s1_arrival_t *arrival,
                                         uint32_t timeout_ms);
+max485_status_t pd42s1_read_realtime_position(uint8_t motor_id,
+                                              int32_t *position_units,
+                                              uint32_t timeout_ms);
+max485_status_t pd42s1_read_position_error(uint8_t motor_id,
+                                           int32_t *position_error_units,
+                                           uint32_t timeout_ms);
+max485_status_t pd42s1_read_work_mode(uint8_t motor_id,
+                                     pd42s1_work_mode_t *mode,
+                                     uint32_t timeout_ms);
 
 #endif

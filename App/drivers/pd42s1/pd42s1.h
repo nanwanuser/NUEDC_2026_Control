@@ -32,6 +32,7 @@ typedef enum {
     PD42S1_COMMAND_READ_REALTIME_POSITION = 0x2A,
     PD42S1_COMMAND_READ_POSITION_ERROR = 0x2B,
     PD42S1_COMMAND_READ_ARRIVAL = 0x30,
+    PD42S1_COMMAND_READ_DRIVER_PARAMETERS = 0x32,
     PD42S1_COMMAND_TORQUE = 0xF0,
     PD42S1_COMMAND_ABSOLUTE_POSITION = 0xF2,
     PD42S1_COMMAND_RELATIVE_POSITION = 0xF3,
@@ -68,6 +69,17 @@ typedef enum {
     PD42S1_ARRIVAL_NOT_REACHED = 0,
     PD42S1_ARRIVAL_REACHED = 1,
 } pd42s1_arrival_t;
+
+typedef enum {
+    PD42S1_WORK_MODE_COMMUNICATION_POSITION = 0,
+    PD42S1_WORK_MODE_COMMUNICATION_SPEED = 1,
+    PD42S1_WORK_MODE_COMMUNICATION_TORQUE = 2,
+    PD42S1_WORK_MODE_PULSE = 3,
+    PD42S1_WORK_MODE_PULSE_WIDTH_POSITION = 4,
+    PD42S1_WORK_MODE_PULSE_WIDTH_SPEED = 5,
+    PD42S1_WORK_MODE_PULSE_WIDTH_TORQUE = 6,
+    PD42S1_WORK_MODE_HOME = 7,
+} pd42s1_work_mode_t;
 
 typedef enum {
     PD42S1_RESULT_SUCCESS = 0x01,
@@ -239,6 +251,17 @@ max485_status_t pd42s1_read_position_error(uint8_t motor_id,
 max485_status_t pd42s1_read_arrival_flag(uint8_t motor_id,
                                         pd42s1_arrival_t *arrival,
                                         uint32_t timeout_ms);
+
+/**
+ * @brief Read the drive's active work mode from driver parameters (0x32).
+ * @param mode Receives Byte2 of the driver-parameter response. Firmware
+ *        revisions may append parameters after this field.
+ * @note Communication position mode covers both absolute and relative position
+ *       commands; this query is used to verify that torque mode has ended.
+ */
+max485_status_t pd42s1_read_work_mode(uint8_t motor_id,
+                                     pd42s1_work_mode_t *mode,
+                                     uint32_t timeout_ms);
 
 /**
  * @brief Receive and validate the response to a PD42S1 control command.

@@ -64,6 +64,11 @@ extern "C" {
    of a 100 mm rectangle is about 2 mm, an order of magnitude inside what the task
    allows. Exact dissections reach 0 and stop at the first complete layout. */
 #define DECISION_GOOD_ENOUGH_SCORE      0.02f
+/* Move every solved placement point this far away from the target rectangle
+   centre. The layout search still evaluates the true edge-to-edge assembly;
+   this final command offset leaves room for stepper and wrist positioning error
+   without changing the selected seams or the required piece rotation. */
+#define DECISION_ASSEMBLY_CLEARANCE_MM  2.0f
 /* Shortest run of shared seam that counts as two pieces being joined. Edges of
    unequal length are allowed to meet, because a cut that stops partway across
    the rectangle leaves one long edge facing two shorter ones, but they still

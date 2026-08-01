@@ -296,6 +296,21 @@ static void fill_move(const DecisionPiece *piece,
     move->place.yaw_deg = target_yaw_deg;
 }
 
+static void apply_assembly_clearance(DecisionPoint target_center,
+                                     DecisionPoint *place)
+{
+    const float dx = place->x_mm - target_center.x_mm;
+    const float dy = place->y_mm - target_center.y_mm;
+    const float distance_mm = sqrtf(dx * dx + dy * dy);
+
+    if (distance_mm > DECISION_GEOMETRY_EPSILON_MM) {
+        const float scale = DECISION_ASSEMBLY_CLEARANCE_MM / distance_mm;
+
+        place->x_mm += scale * dx;
+        place->y_mm += scale * dy;
+    }
+}
+
 static void transformed_vertices(const DecisionPiece *piece,
                                  const RigidTransform *transform,
                                  DecisionPoint *vertices)
@@ -1350,6 +1365,7 @@ DecisionResult Decision_SolveGeneral(const DecisionVisionFrame *frame,
         place.y_mm = target_center.y_mm -
             rectangle_sine * layout_grasp.x_mm +
             rectangle_cosine * layout_grasp.y_mm - rectangle_center_y;
+        apply_assembly_clearance(target_center, &place);
 
         fill_move(&search.pieces[piece_index],
                   grasp,
